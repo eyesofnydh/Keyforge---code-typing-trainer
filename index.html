@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keyforge — code typing trainer</title>
+    <meta
+      name="description"
+      content="A typing trainer built for code: brackets, operators, symbols and real language keywords, with per-key weakness tracking."
+    />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#surface">Skip to typing area</a>
+
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" fill="none" aria-label="Keyforge" role="img">
+          <path d="M11 6 4 16l7 10" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" />
+          <path d="M21 6l7 10-7 10" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" />
+          <path d="M16 9v14" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" opacity=".45" />
+        </svg>
+        <span class="brand-name">Keyforge</span>
+        <span class="brand-tag">code typing trainer</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="ghost-btn" id="statsToggle" aria-expanded="false" aria-controls="statsPanel">
+          Progress
+        </button>
+        <button class="icon-btn" data-theme-toggle aria-label="Switch to light mode"></button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <!-- ---------------- setup ---------------- -->
+      <section class="setup" aria-label="Drill setup">
+        <div class="field">
+          <span class="field-label">Track</span>
+          <div class="chips" id="trackChips" role="tablist" aria-label="Drill track">
+            <button class="chip" role="tab" data-track="symbols">Symbols</button>
+            <button class="chip" role="tab" data-track="keywords">Keywords</button>
+            <button class="chip" role="tab" data-track="snippets">Real code</button>
+            <button class="chip" role="tab" data-track="weak">Weak keys</button>
+            <button class="chip" role="tab" data-track="custom">Your code</button>
+          </div>
+        </div>
+
+        <div class="field" data-when="symbols">
+          <span class="field-label">Symbol set</span>
+          <div class="chips" id="symbolChips" role="tablist" aria-label="Symbol set"></div>
+        </div>
+
+        <div class="field" data-when="keywords snippets">
+          <span class="field-label">Language</span>
+          <div class="chips" id="langChips" role="tablist" aria-label="Language"></div>
+        </div>
+
+        <div class="field" data-when="snippets">
+          <span class="field-label">Snippet</span>
+          <div class="chips" id="snippetChips" role="tablist" aria-label="Snippet"></div>
+        </div>
+
+        <div class="field" data-when="symbols keywords weak">
+          <span class="field-label">Length</span>
+          <div class="chips" id="lengthChips" role="tablist" aria-label="Length">
+            <button class="chip" role="tab" data-length="short">Short</button>
+            <button class="chip" role="tab" data-length="medium">Medium</button>
+            <button class="chip" role="tab" data-length="long">Long</button>
+          </div>
+        </div>
+
+        <div class="field field--wide" data-when="custom">
+          <span class="field-label" id="customLabel">Paste your own code</span>
+          <textarea
+            id="customInput"
+            class="custom-input"
+            rows="5"
+            spellcheck="false"
+            aria-labelledby="customLabel"
+            placeholder="Paste a function, config block, or query — anything you type often."
+          ></textarea>
+        </div>
+
+        <div class="field field--wide toggles">
+          <label class="toggle">
+            <input type="checkbox" id="optStrict" checked />
+            <span>Block on error</span>
+            <small>Wrong key does not advance — accuracy first</small>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="optIndent" checked />
+            <span>Auto-indent</span>
+            <small>Skip leading whitespace like a real editor</small>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="optKeyboard" checked />
+            <span>Show keyboard</span>
+            <small>Live key hints under the drill</small>
+          </label>
+        </div>
+      </section>
+
+      <!-- ---------------- typing surface ---------------- -->
+      <section class="panel" id="surface" aria-label="Typing drill">
+        <div class="meta" role="group" aria-label="Live statistics">
+          <div class="meta-item">
+            <span class="meta-val" id="mWpm">0</span><span class="meta-key">wpm</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-val" id="mAcc">100<i>%</i></span><span class="meta-key">accuracy</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-val" id="mTime">0.0<i>s</i></span><span class="meta-key">elapsed</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-val" id="mErr">0</span><span class="meta-key">errors</span>
+          </div>
+          <div class="meta-spacer"></div>
+          <div class="drill-name" id="drillName">Bracket pairs</div>
+        </div>
+
+        <div class="progress" aria-hidden="true"><i id="progressBar"></i></div>
+
+        <div class="code-wrap">
+          <div
+            class="code"
+            id="code"
+            tabindex="0"
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Type the code shown here"
+          ></div>
+          <div class="focus-veil" id="focusVeil"><span>Click or press Enter to focus</span></div>
+        </div>
+
+        <div class="surface-foot">
+          <p class="hint" id="hint"></p>
+          <div class="surface-btns">
+            <button class="ghost-btn" id="restartBtn">Restart <kbd>Esc</kbd></button>
+            <button class="primary-btn" id="nextBtn">New drill <kbd>Tab</kbd></button>
+          </div>
+        </div>
+
+        <div class="keyboard" id="keyboard" aria-hidden="true"></div>
+      </section>
+
+      <!-- ---------------- results ---------------- -->
+      <section class="panel results" id="results" hidden aria-label="Run results">
+        <div class="results-head">
+          <h2 class="results-title">Run complete</h2>
+          <span class="results-sub" id="resultsSub"></span>
+        </div>
+        <div class="kpis">
+          <div class="kpi kpi--hero">
+            <span class="kpi-label">Net WPM</span>
+            <span class="kpi-val" id="rWpm">0</span>
+            <span class="kpi-delta" id="rWpmDelta"></span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Accuracy</span><span class="kpi-val" id="rAcc">0%</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Raw WPM</span><span class="kpi-val" id="rRaw">0</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Consistency</span><span class="kpi-val" id="rCons">0%</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Errors</span><span class="kpi-val" id="rErr">0</span>
+          </div>
+        </div>
+        <div class="results-cols">
+          <div>
+            <h3 class="sub">Slowest keys this run</h3>
+            <ul class="keylist" id="rSlow"></ul>
+          </div>
+          <div>
+            <h3 class="sub">Missed keys this run</h3>
+            <ul class="keylist" id="rMiss"></ul>
+          </div>
+        </div>
+        <div class="results-btns">
+          <button class="ghost-btn" id="rRepeat">Repeat drill</button>
+          <button class="primary-btn" id="rNext">Next drill</button>
+        </div>
+      </section>
+
+      <!-- ---------------- progress ---------------- -->
+      <section class="panel stats" id="statsPanel" hidden aria-label="Progress">
+        <div class="stats-head">
+          <h2 class="results-title">Progress</h2>
+          <div class="stats-tools">
+            <button class="ghost-btn" id="exportBtn">Export</button>
+            <label class="ghost-btn" for="importFile">Import</label>
+            <input type="file" id="importFile" accept="application/json" class="sr-only" />
+            <button class="ghost-btn danger" id="resetBtn">Reset</button>
+          </div>
+        </div>
+        <p class="storage-note" id="storageNote"></p>
+
+        <div class="kpis">
+          <div class="kpi"><span class="kpi-label">Runs</span><span class="kpi-val" id="sRuns">0</span></div>
+          <div class="kpi"><span class="kpi-label">Best WPM</span><span class="kpi-val" id="sBest">0</span></div>
+          <div class="kpi"><span class="kpi-label">Last 10 avg</span><span class="kpi-val" id="sAvg">0</span></div>
+          <div class="kpi"><span class="kpi-label">Avg accuracy</span><span class="kpi-val" id="sAccAvg">0%</span></div>
+          <div class="kpi"><span class="kpi-label">Chars typed</span><span class="kpi-val" id="sChars">0</span></div>
+        </div>
+
+        <h3 class="sub">WPM over your last runs</h3>
+        <div class="chart" id="chart"></div>
+
+        <div class="heat-head">
+          <h3 class="sub">Key weakness map</h3>
+          <div class="chips small" id="heatMetric" role="tablist" aria-label="Heat map metric">
+            <button class="chip" role="tab" data-metric="errors">Error rate</button>
+            <button class="chip" role="tab" data-metric="speed">Latency</button>
+          </div>
+        </div>
+        <div class="keyboard keyboard--heat" id="heatmap"></div>
+        <p class="legend">
+          <span class="swatch swatch--none"></span> no data
+          <span class="swatch swatch--good"></span> solid
+          <span class="swatch swatch--mid"></span> shaky
+          <span class="swatch swatch--bad"></span> weak
+          <em id="heatNote"></em>
+        </p>
+
+        <h3 class="sub">Your 8 weakest keys</h3>
+        <ul class="keylist keylist--wide" id="sWeak"></ul>
+        <p class="empty" id="statsEmpty" hidden>
+          No runs recorded yet. Finish a drill and your numbers show up here.
+        </p>
+      </section>
+
+      <footer class="foot">
+        <p>
+          Practice at roughly 80% of your top speed and keep accuracy above 97% — speed follows accuracy,
+          not the other way round. 10–15 focused minutes a day beats an hour once a week.
+        </p>
+      </footer>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  <script data-pplx-inline-edit>
+(function () {
+  if (window === window.top) return;
+
+  const allowedParentOrigins = ["https://www.perplexity.ai","https://perplexity.ai","https://testing.perplexity.ai","https://staging.perplexity.ai","https://*.preview.i.perplexity.ai","http://perplexity.localhost","http://localhost:1420","http://127.0.0.1:1420","http://localhost:3000","http://127.0.0.1:3000","http://localhost:5173","http://127.0.0.1:5173"];
+  const MAX_FONT_BYTES = 500 * 1024;
+  const MAX_TOTAL_FONT_BYTES = 2 * 1024 * 1024;
+  let scrollForwarding = false;
+  let scrollRaf = 0;
+  let trustedTopOrigin = null;
+
+  // Allow entries like "https://*.preview.i.perplexity.ai" — the wildcard
+  // matches a single DNS label (no dots), so "https://*.foo" cannot stretch
+  // across multiple labels.
+  function matchesAllowedOrigin(origin) {
+    if (!origin) return false;
+    for (const entry of allowedParentOrigins) {
+      if (!entry.includes("*")) {
+        if (entry === origin) return true;
+        continue;
+      }
+      const pattern = new RegExp(
+        "^" +
+          entry.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^.]+") +
+          "$",
+      );
+      if (pattern.test(origin)) return true;
+    }
+    return false;
+  }
+
+  // Trust decision: when the sender is same-origin-visible (event.origin is a
+  // real origin like https://www.perplexity.ai) we trust event.origin directly.
+  // When event.origin is "null" (opaque broker srcdoc), we fall back to the
+  // broker's stamped `parentOrigin` to identify the top window. The fallback
+  // is claim-only — we rely on the browser's native `targetOrigin` enforcement
+  // on the response path (see postToTrustedTop) to ensure replies can't be
+  // delivered to anyone but the actual top window of that claimed origin.
+  function getTrustedParentOrigin(event) {
+    const forwardedParentOrigin =
+      typeof event.data.parentOrigin === "string" ? event.data.parentOrigin : null;
+    const parentOrigin = event.origin === "null" ? forwardedParentOrigin : event.origin;
+    return matchesAllowedOrigin(parentOrigin) ? parentOrigin : null;
+  }
+
+  // All responses go to window.top with targetOrigin = the allowlisted origin.
+  // An attacker that iframes us inside their own null-origin broker can claim
+  // any parentOrigin they like, but the browser will drop the reply whenever
+  // the real top's origin doesn't match — so the screenshot never leaves.
+  function postToTrustedTop(message) {
+    if (!trustedTopOrigin) return;
+    try {
+      window.top.postMessage(message, trustedTopOrigin);
+    } catch (_error) {}
+  }
+
+  function inlineAll(original, clone) {
+    if (original.nodeType !== 1 || clone.nodeType !== 1) return;
+
+    try {
+      const computedStyle = getComputedStyle(original);
+      // cssText on a computed style is the serialized declaration in modern
+      // Chromium/Safari — a single read beats enumerating ~400 longhand
+      // properties. Firefox returns "" here, so we fall back on empty.
+      const serialized = computedStyle.cssText;
+      if (serialized) {
+        clone.style.cssText = serialized;
+      } else {
+        const parts = new Array(computedStyle.length);
+        for (let index = 0; index < computedStyle.length; index += 1) {
+          const property = computedStyle[index];
+          parts[index] = `${property}:${computedStyle.getPropertyValue(property)};`;
+        }
+        clone.style.cssText = parts.join("");
+      }
+    } catch (_error) {}
+
+    const originalChildren = original.children;
+    const clonedChildren = clone.children;
+    for (
+      let index = 0;
+      index < originalChildren.length && index < clonedChildren.length;
+      index += 1
+    ) {
+      inlineAll(originalChildren[index], clonedChildren[index]);
+    }
+  }
+
+  function extractFontUrl(srcValue) {
+    const matches = [
+      ...srcValue.matchAll(
+        /url\(["']?([^"')]+)["']?\)(?:\s*format\(["']?([^"')]+)["']?\))?/gi,
+      ),
+    ];
+    if (matches.length === 0) return null;
+    const woff2 = matches.find((m) => m[2] && m[2].toLowerCase().includes("woff2"));
+    if (woff2) return woff2[1];
+    const woff = matches.find((m) => m[2] && m[2].toLowerCase().includes("woff"));
+    if (woff) return woff[1];
+    return matches[0][1];
+  }
+
+  // Cache resolved font URL -> data URI across captures. Fonts on a page
+  // essentially never change, and a batch run emits multiple captures back to
+  // back — without this we'd refetch + re-base64 every time.
+  const fontDataUriCache = new Map();
+  const SRC_DECLARATION_RE = /src\s*:\s*[^;}]+/i;
+
+  async function fetchAsDataUri(url) {
+    if (fontDataUriCache.has(url)) return fontDataUriCache.get(url);
+    let dataUri = null;
+    try {
+      const response = await fetch(url, { mode: "cors", credentials: "omit" });
+      if (response.ok) {
+        const blob = await response.blob();
+        if (blob.size <= MAX_FONT_BYTES) {
+          dataUri = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () =>
+              resolve(typeof reader.result === "string" ? reader.result : null);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          });
+        }
+      }
+    } catch (_error) {
+      dataUri = null;
+    }
+    fontDataUriCache.set(url, dataUri);
+    return dataUri;
+  }
+
+  function collectFontFaceRuleTexts() {
+    const rules = [];
+    for (const sheet of document.styleSheets) {
+      let cssRules;
+      try {
+        cssRules = sheet.cssRules;
+      } catch (_error) {
+        continue;
+      }
+      if (!cssRules) continue;
+      for (const rule of cssRules) {
+        const cssText = rule.cssText || "";
+        if (cssText.startsWith("@font-face")) rules.push(cssText);
+      }
+    }
+    return rules;
+  }
+
+  async function buildInlinedFontCss() {
+    const ruleTexts = collectFontFaceRuleTexts();
+    if (ruleTexts.length === 0) return null;
+
+    const resolved = ruleTexts.map((cssText) => {
+      if (!SRC_DECLARATION_RE.test(cssText)) return null;
+      const srcMatch = cssText.match(/src\s*:\s*([^;}]+)[;}]/i);
+      if (!srcMatch) return null;
+      const url = extractFontUrl(srcMatch[1]);
+      if (!url) return null;
+      try {
+        return { cssText, url: new URL(url, document.baseURI).href };
+      } catch (_error) {
+        return null;
+      }
+    });
+
+    const dataUris = await Promise.all(
+      resolved.map((entry) => (entry ? fetchAsDataUri(entry.url) : Promise.resolve(null))),
+    );
+
+    const inlined = [];
+    let totalBytes = 0;
+    for (let index = 0; index < resolved.length; index += 1) {
+      const entry = resolved[index];
+      const dataUri = dataUris[index];
+      if (!entry || !dataUri) continue;
+      const approxBytes = dataUri.length * 0.75;
+      if (totalBytes + approxBytes > MAX_TOTAL_FONT_BYTES) break;
+      totalBytes += approxBytes;
+      inlined.push(entry.cssText.replace(SRC_DECLARATION_RE, `src: url("${dataUri}")`));
+    }
+    return inlined.length > 0 ? inlined.join("\n") : null;
+  }
+
+  function stripExternal(clone) {
+    const images = clone.querySelectorAll("img");
+    for (let index = 0; index < images.length; index += 1) {
+      const src = images[index].getAttribute("src");
+      if (src && !src.startsWith("data:")) images[index].removeAttribute("src");
+    }
+
+    const elements = clone.querySelectorAll("*");
+    for (let index = 0; index < elements.length; index += 1) {
+      const style = elements[index].style.cssText;
+      if (style && style.includes("url(")) {
+        elements[index].style.cssText = style.replace(
+          /url\(["']?(?!data:)[^)"']*["']?\)/gi,
+          "none",
+        );
+      }
+    }
+  }
+
+  function emitScroll() {
+    scrollRaf = 0;
+    if (!scrollForwarding) return;
+    postToTrustedTop({
+      type: "INLINE_EDIT_SCROLL",
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+    });
+  }
+
+  window.addEventListener(
+    "scroll",
+    function () {
+      if (!scrollForwarding || scrollRaf) return;
+      scrollRaf = requestAnimationFrame(emitScroll);
+    },
+    { passive: true, capture: true },
+  );
+
+  async function handleCaptureRequest(event) {
+    const requestId = event.data.requestId;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    function postResult(dataUrl) {
+      postToTrustedTop({
+        type: "INLINE_EDIT_SCREENSHOT_RESULT",
+        requestId,
+        dataUrl,
+        scrollX,
+        scrollY,
+      });
+    }
+
+    try {
+      // Wait for any pending web fonts to resolve so both inline metrics and
+      // the @font-face inlining below see the same loaded faces.
+      if (document.fonts && document.fonts.ready) {
+        try {
+          await document.fonts.ready;
+        } catch (_error) {}
+      }
+
+      const clone = document.documentElement.cloneNode(true);
+      inlineAll(document.documentElement, clone);
+
+      const removedNodes = clone.querySelectorAll("script,link[rel=\"stylesheet\"],style");
+      for (let index = 0; index < removedNodes.length; index += 1) {
+        removedNodes[index].remove();
+      }
+
+      stripExternal(clone);
+
+      // Re-embed web fonts as data-URI @font-face rules so the SVG rasterizer
+      // can resolve them — external font URLs aren't fetched during
+      // foreignObject rendering, which would otherwise force a fallback face
+      // and change text metrics.
+      const inlinedFontCss = await buildInlinedFontCss();
+      if (inlinedFontCss) {
+        const styleEl = document.createElement("style");
+        styleEl.textContent = inlinedFontCss;
+        const head = clone.querySelector("head");
+        if (head) head.appendChild(styleEl);
+        else clone.insertBefore(styleEl, clone.firstChild);
+      }
+
+      const html = new XMLSerializer().serializeToString(clone);
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+        '<foreignObject width="100%" height="100%">' +
+        `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden">` +
+        `<div style="position:relative;left:-${scrollX}px;top:-${scrollY}px">` +
+        html +
+        "</div></div></foreignObject></svg>";
+      const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      const image = new Image();
+      image.onload = function () {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(image, 0, 0);
+        postResult(canvas.toDataURL("image/png"));
+      };
+      image.onerror = function () {
+        postResult(null);
+      };
+      image.src = svgUrl;
+    } catch (_error) {
+      postResult(null);
+    }
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!event.data) return;
+    // Only accept messages from the direct parent frame. Blocks sibling /
+    // unrelated-window postMessage senders that could otherwise reach us.
+    if (event.source !== window.parent) return;
+
+    const trustedParentOrigin = getTrustedParentOrigin(event);
+    if (!trustedParentOrigin) return;
+    trustedTopOrigin = trustedParentOrigin;
+
+    if (event.data.type === "INLINE_EDIT_SCROLL_START") {
+      scrollForwarding = true;
+      emitScroll();
+      return;
+    }
+
+    if (event.data.type === "INLINE_EDIT_SCROLL_STOP") {
+      scrollForwarding = false;
+      if (scrollRaf) cancelAnimationFrame(scrollRaf);
+      scrollRaf = 0;
+      return;
+    }
+
+    if (event.data.type !== "INLINE_EDIT_CAPTURE_REQUEST") return;
+
+    handleCaptureRequest(event);
+  });
+})();
+
+
+</script></body>
+</html>
