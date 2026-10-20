@@ -1693,6 +1693,14 @@ dialog p {
   }
 }
 
+@media(min-width:801px) and (max-height:800px) {
+  .sidebar {padding-top:24px;padding-bottom:16px}
+  .sidebar .brand {margin-bottom:26px}
+  .sidebar nav {gap:4px}
+  .sidebar nav a {padding-top:10px;padding-bottom:10px}
+  .sidebar-bottom {padding-top:20px}
+}
+
 @media(max-width:1100px) {
   .app-shell {
     grid-template-columns:190px minmax(0,1fr)
@@ -2017,6 +2025,115 @@ dialog p {
   .theme-card {
     padding:12px
   }
+}
+
+.arcade-level-bar {
+  display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 24px;
+  border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);
+}
+.arcade-level-bar strong {color:var(--accent);font-weight:500;min-width:110px}
+.arcade-level-track {height:4px;background:var(--surface2);border-radius:4px;flex:1;min-width:70px;overflow:hidden}
+.arcade-level-track i {display:block;background:var(--accent);height:100%;width:0;transition:width .2s ease}
+#levelToast {min-width:120px;color:var(--accent);font-size:11px}
+.level-pop {animation:level-pop .45s ease-out}
+.enemy-cleared {animation:enemy-clear .24s ease-out forwards;pointer-events:none}
+@keyframes level-pop {from{opacity:0;translate:0 8px}to{opacity:1;translate:0 0}}
+@keyframes enemy-clear {to{opacity:0;scale:1.3;filter:blur(3px)}}
+
+.game-over-dialog {max-width:480px;text-align:center;padding:34px;overflow:hidden}
+.game-over-dialog[open] {animation:game-over-enter .35s cubic-bezier(.2,.8,.2,1)}
+.game-over-dialog h2 {font-size:34px;line-height:1.2;letter-spacing:-1px}
+.game-over-dialog p {font-size:13px;line-height:1.7;margin:14px 0 20px}
+.game-over-dialog .button-row {justify-content:center}
+.game-over-dialog .eyebrow {margin-top:12px}
+.outcome-symbol {position:relative;width:90px;height:90px;margin:0 auto 20px;display:grid;place-items:center}
+.outcome-symbol b {font:64px var(--mono);font-weight:400;position:relative;z-index:1}
+.game-lost .outcome-symbol {color:var(--error)}
+.game-won .outcome-symbol {color:var(--accent)}
+.outcome-symbol:before {content:'';position:absolute;inset:3px;border:2px solid currentColor;border-radius:24px;rotate:12deg;opacity:.55}
+.game-lost .outcome-symbol {animation:shield-break .65s ease-out}
+.game-won .outcome-symbol {animation:victory-bloom .65s ease-out}
+.outcome-symbol i {position:absolute;left:8px;top:23px;width:10px;height:16px;border-radius:2px;background:currentColor;opacity:0;animation:outcome-particle .75s ease-out}
+.outcome-symbol i:last-child {left:auto;right:8px;top:55px;animation-name:outcome-particle-right}
+.outcome-summary {display:flex;justify-content:center;gap:28px;padding:14px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:24px;font-size:12px;color:var(--muted)}
+.outcome-summary strong {font:20px var(--mono);color:var(--ink);margin-right:5px}
+@keyframes game-over-enter {from{opacity:0;transform:translateY(20px) scale(.94)}to{opacity:1;transform:none}}
+@keyframes shield-break {0%{transform:scale(.65) rotate(-15deg)}35%{transform:scale(1.12) rotate(9deg)}65%{transform:rotate(-6deg)}100%{transform:none}}
+@keyframes victory-bloom {0%{transform:scale(.4) rotate(-35deg)}65%{transform:scale(1.12) rotate(6deg)}100%{transform:none}}
+@keyframes outcome-particle {25%{opacity:.8}100%{opacity:0;transform:translate(-45px,35px) rotate(-70deg)}}
+@keyframes outcome-particle-right {25%{opacity:.8}100%{opacity:0;transform:translate(45px,-35px) rotate(70deg)}}
+
+.arcade-art-symbol {font:90px var(--mono);color:var(--accent);position:relative;z-index:1}
+.art-orbit {position:absolute;width:145px;height:145px;border:1px dashed var(--faint);border-radius:50%;rotate:20deg}
+.dungeon-door {font:100px var(--mono);color:var(--accent);filter:drop-shadow(0 15px 25px color-mix(in srgb,var(--accent) 20%,transparent))}
+.dungeon-stars {position:absolute;top:26px;font:30px var(--mono);color:var(--muted);letter-spacing:20px}
+.challenge-scene {position:relative;display:flex;align-items:center;flex-direction:column;justify-content:center;min-height:350px;padding:28px 26px;background:radial-gradient(ellipse at 50% 20%,color-mix(in srgb,var(--accent) 7%,transparent),transparent 70%)}
+.challenge-scene p {font-size:12px;text-align:center;max-width:560px;margin:10px 0 18px}
+.challenge-creature {font:60px var(--mono);line-height:1.2;color:var(--accent);margin-bottom:12px;animation:creature-arrive .45s ease-out}
+.challenge-prompt {font:clamp(22px,3vw,34px)/1.6 var(--mono);text-align:center;overflow-wrap:anywhere;width:100%;color:var(--muted);min-height:65px}
+.challenge-prompt b {color:var(--accent);font-weight:400;text-decoration:underline;text-underline-offset:6px}
+.prompt-enter {animation:prompt-enter .25s ease-out}
+.challenge-fuse {width:min(320px,100%);height:5px;background:var(--border);border-radius:5px;margin:16px 0;overflow:hidden}
+.challenge-fuse>i {display:block;background:var(--accent);height:100%;width:100%}
+#challengeFeedback {min-height:18px;font-size:11px;color:var(--accent)}
+.dungeon-rooms {display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:22px}
+.dungeon-rooms span {border:1px solid var(--border);padding:5px 12px;border-radius:5px;font-size:11px;color:var(--muted)}
+.dungeon-rooms .active {border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.dungeon-rooms .cleared {color:var(--good);background:var(--accent-soft)}
+.dungeon-rooms .cleared:before {content:'✓ ';font-weight:600}
+@keyframes creature-arrive {from{opacity:0;transform:translateY(-15px)}to{opacity:1;transform:none}}
+@keyframes prompt-enter {from{opacity:.2;transform:translateY(7px)}to{opacity:1;transform:none}}
+
+.placement-steps {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:26px}
+.placement-steps section {display:flex;gap:13px;align-items:flex-start;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+.placement-steps section>b {display:grid;place-items:center;width:25px;height:25px;flex:none;border:1px solid var(--border);border-radius:50%;font:12px var(--mono);color:var(--accent)}
+.placement-steps h2 {font-size:14px;margin:3px 0 8px}
+.placement-steps p {font-size:12px;line-height:1.8}
+.placement-steps kbd {color:var(--ink);font-size:11px;opacity:1;white-space:nowrap}
+.guide-keyboard {max-width:810px;margin-top:25px}
+.guide-key {background:color-mix(in srgb,var(--finger-color) 10%,var(--surface));color:var(--ink);max-width:52px;height:43px}
+.guide-key.finger-active {background:color-mix(in srgb,var(--finger-color) 27%,var(--surface));border-color:var(--finger-color);color:var(--ink)}
+.guide-key.wide {max-width:290px}
+.anchor-key:after {content:'';width:9px;height:2px;background:currentColor;display:block;margin-top:-7px;border-radius:2px}
+.guide-key-detail {display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;margin:25px 0 0;padding:15px;background:var(--surface2);border-radius:7px;font-size:13px;text-align:center}
+.guide-key-detail span {font-size:12px;color:var(--muted)}
+.guide-key-detail kbd {font-size:12px;color:var(--ink)}
+.hands-diagram {display:grid;grid-template-columns:1fr 1fr;max-width:650px;margin:0 auto;gap:22px}
+.hand-figure {margin:10px 0 20px;text-align:center;min-width:0}
+.hand-figure svg {width:100%;height:auto;display:block}
+.hand-figure figcaption {font-size:11px;color:var(--muted)}
+.hand-palm {fill:var(--surface2);stroke:var(--border);stroke-width:2}
+.hand-finger {fill:color-mix(in srgb,var(--finger-color) 14%,var(--surface2));stroke:var(--border);stroke-width:2}
+.hand-thumb {fill:var(--surface2);stroke:var(--border);stroke-width:2}
+.hands-diagram text {fill:var(--ink);font:500 15px var(--mono)}
+.hands-diagram .hand-label {fill:var(--muted);font:13px var(--font)}
+.finger-active .hand-finger,.finger-active .hand-thumb {fill:color-mix(in srgb,var(--finger-color,var(--accent)) 40%,var(--surface));stroke:var(--finger-color,var(--accent));stroke-width:3}
+.finger-selectors {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.finger-selector {display:flex;align-items:center;gap:11px;text-align:left;padding:12px;border:1px solid var(--border);border-radius:7px;font-size:12px;background:var(--surface)}
+.finger-selector i {width:10px;height:10px;flex:none;border-radius:50%;background:var(--finger-color)}
+.finger-selector small {display:block;margin-top:3px;font-size:10px;color:var(--muted)}
+.finger-selector[aria-pressed='true'] {border-color:var(--finger-color);background:color-mix(in srgb,var(--finger-color) 9%,var(--surface))}
+@media(max-width:800px) {
+  .placement-steps {grid-template-columns:1fr;gap:10px}
+  .finger-selectors {grid-template-columns:repeat(2,minmax(0,1fr))}
+  .guide-key {height:37px;font-size:11px}
+  .game-over-dialog {padding:26px}
+}
+@media(max-width:520px) {
+  .arcade-level-bar {padding:12px 18px;gap:8px}
+  #levelToast {min-width:0;flex-basis:100%}
+  .guide-keyboard {gap:4px}
+  .guide-key {height:31px;font-size:10px}
+  .hands-diagram {gap:0;grid-template-columns:1fr;max-width:280px}
+  .hand-figure figcaption {font-size:10px}
+  .finger-selector {padding:10px 8px;gap:7px;font-size:11px}
+  .placement-panel {padding:16px}
+  .game-over-dialog h2 {font-size:28px}
+  .outcome-symbol {width:70px;height:70px}
+  .outcome-symbol b {font-size:50px}
+  .challenge-scene {padding:22px 18px;min-height:340px}
+  .dungeon-rooms {gap:5px}
+  .dungeon-rooms span {padding:5px 8px}
 }
 
 @media(prefers-reduced-motion:reduce) {

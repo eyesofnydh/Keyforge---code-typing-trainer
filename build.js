@@ -1,6 +1,6 @@
 import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 // Explicit allowlist keeps source-only tests and local progress out of the deployment.
-const files = ['index.html', 'style.css', 'favicon.svg', 'app.js', 'core.js', 'content.js', 'data.js', 'storage.js'];
+const files = ['index.html', 'style.css', 'favicon.svg', 'app.js', 'core.js', 'content.js', 'data.js', 'storage.js', 'arcade.js', 'learn.js'];
 await mkdir('dist', { recursive: true });
 await Promise.all(files.map(file => copyFile(file, `dist/${file}`)));
 await writeFile('dist/_headers', '/*\n  Cache-Control: public, max-age=0, must-revalidate\n');

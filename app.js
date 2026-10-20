@@ -2,6 +2,8 @@ import { LANGUAGES, SYMBOL_SETS, SNIPPETS, KEY_ROWS, KEY_FOR_CHAR } from './data
 import { TypingSession, average, clamp, ghostPosition, localDay, streak, weakKeys, comparable, accuracyForRuns, benchmarkForRuns } from './core.js';
 import { makeText, pick, WORDS, PASSAGES } from './content.js';
 import { createStore } from './storage.js';
+import { difficultyFor, arcadeWord, GAME_MODES, renderWordGame, showGameDialog, closeGameDialog } from './arcade.js';
+import { renderHandGuide } from './learn.js';
 
 const $ = id => document.getElementById(id);
 const esc = value => String(value).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch]);
@@ -13,9 +15,9 @@ let backing = null;
 try { backing = window.localStorage; } catch {}
 const store = createStore(backing);
 let route = 'home', params = new URLSearchParams(), frame = null, session = null, current = null, saved = false;
-let ghost = null, painted = -1, spans = [], invaders = null;
+let ghost = null, painted = -1, spans = [], invaders = null, challenge = null;
 const options = { track:'words', length:'medium', lang:'javascript', codeTrack:'snippets', snippet:0, symbolSet:'mixed', duration:60, strict:false, keyboard:true, indent:true, focus:false, custom:'', targetKey:'' };
-const titles = { home:'Overview', practice:'Practice', test:'Speed test', games:'Arcade', stats:'Skill map', profile:'Your profile' };
+const titles = { home:'Overview', practice:'Practice', test:'Speed test', games:'Arcade', learn:'Hand placement', stats:'Skill map', profile:'Your profile' };
 const levelName = xp => xp >= 10000 ? 'Velocity' : xp >= 4000 ? 'Key Runner' : xp >= 1500 ? 'Flow Typist' : 'Key Scout';
 
 function applyTheme(theme) {
@@ -165,8 +167,8 @@ function checkpoint() {
   if(!session||saved||session.attempts===0||current?.placeholder)return;
   store.record(session,sessionMeta(false),performance.now());session.checkpointAt=performance.now();updateChrome();
 }
-function ensureTick(){if(frame!==null)return;function tick(){frame=null;if(!session||session.done)return;if(invaders){tickInvaders(performance.now());}else{if(session.expired(performance.now()))session.finish(performance.now());paintRun();if(session.done)finishRun();}if(session&&!session.done){if(performance.now()-(session.checkpointAt||0)>5000)checkpoint();frame=requestAnimationFrame(tick);}}frame=requestAnimationFrame(tick);}
-function stopRun(){checkpoint();if(frame!==null)cancelAnimationFrame(frame);frame=null;if(invaders)invaders=null;session=null;spans=[];saved=false;}
+function ensureTick(){if(frame!==null)return;function tick(){frame=null;if(!session||session.done)return;if(challenge){challenge.tick(performance.now());}else if(invaders){tickInvaders(performance.now());}else{if(session.expired(performance.now()))session.finish(performance.now());paintRun();if(session.done)finishRun();}if(session&&!session.done){if(performance.now()-(session.checkpointAt||0)>5000)checkpoint();frame=requestAnimationFrame(tick);}}frame=requestAnimationFrame(tick);}
+function stopRun(){checkpoint();if(frame!==null)cancelAnimationFrame(frame);frame=null;closeGameDialog();challenge?.destroy();challenge=null;if(invaders)invaders=null;session=null;spans=[];saved=false;}
 function finishRun(completed = true) {
   if(saved||!session||session.started===null||session.attempts===0)return;
   saved=true;if(frame!==null)cancelAnimationFrame(frame);frame=null;
@@ -175,16 +177,17 @@ function finishRun(completed = true) {
   let ghostNote='';
   if(current.mode==='ghost'&&completed){
     const oldGhost=store.data.ghosts.classic;
-    if(!oldGhost||run.wpm>oldGhost.wpm){store.data.ghosts.classic={text:current.text,wpm:run.wpm,events:session.events.slice(0,4000)};store.save();ghostNote=oldGhost?'You beat your ghost. This run is your new replay.':'Your ghost is ready. Race this replay next time.';}
+    if(!oldGhost||!oldGhost.events.length||run.seconds*1000<oldGhost.events.at(-1)[0]){store.data.ghosts.classic={text:current.text,wpm:run.wpm,events:session.events.slice(0,4000)};store.save();ghostNote=oldGhost?'You beat your ghost. This run is your new replay.':'Your ghost is ready. Race this replay next time.';}
     else ghostNote='Your best ghost is waiting for another race.';
   }
   if(!completed)ghostNote='Progress saved. Finish the full passage or timer to set a personal benchmark or ghost replay.';
   if(options.focus)setFocus(false);$('typingInput')?.setAttribute('disabled','');$('invaderInput')?.setAttribute('disabled','');$('finishBtn')?.setAttribute('disabled','');
   const misses=Object.entries(session.keys).filter(([,v])=>v.err>0).sort((a,b)=>b[1].err-a[1].err).slice(0,4);
   $('results').innerHTML=`<section class="result" aria-label="Session results"><div class="result-head"><div><div class="eyebrow">${current.mode==='invaders'?`${invaders?.score||0} WORDS CLEARED`:ghostNote?'YOU VS. YOU':'ONE SESSION BETTER'}</div><h2>${run.acc>=98?'That’s a steady rhythm.':'Good practice. Keep going.'}</h2></div><span class="xp-badge">+${run.xp} XP</span></div><div class="metric-grid">${metric('Typing speed',fmt(run.wpm),'WPM',best===null?'Your first run in this mode':run.wpm>best?`New best · +${fmt(run.wpm-best,1)} WPM`:`Best in this mode · ${fmt(best)} WPM`,true)}${metric('Accuracy',fmt(run.acc,1),'%',`${run.errors} incorrect attempts`)}${metric('Consistency',run.cons===null?'—':fmt(run.cons),'%',run.cons===null?'Needs at least 5 measured intervals':'Based on correct-key timing')}${metric('Time practised',fmt(run.seconds,1),'s',`${run.chars} correct characters`)}</div><p class="result-info">${esc(ghostNote|| (misses.length?`Next focus: ${misses.map(([k,v])=>`${labelKey(k)} (${v.err} misses)`).join(', ')}.`:'A clean session. Try a longer passage or a new mode.'))}</p><p class="result-info">Raw speed ${fmt(run.raw)} WPM · ${run.backspaces} corrections · ${run.strict?'Accuracy mode':'Standard mode'}. Errors remain in accuracy after correction.</p><div class="button-row"><button class="button" id="resultRepeat">${current.mode==='ghost'?'Race again':current.mode==='invaders'?'Play again':'Try again'} ↗</button><a href="#practice?track=weak" class="button secondary">Train weak keys</a><a href="#stats" class="text-link">Explore your skill map →</a></div></section>`;
-  $('resultRepeat').addEventListener('click',()=>{if(current.mode==='invaders'){stopRun();renderInvaders();}else restartCurrent(true);});
+  $('resultRepeat').addEventListener('click',()=>{if(current.mode==='invaders'){stopRun();renderInvaders();}else if(['survival','dungeon'].includes(current.mode)){const mode=current.mode;stopRun();renderChallenge(mode);}else restartCurrent(true);});
   updateChrome();notify(`Session complete. ${fmt(run.wpm)} words per minute, ${fmt(run.acc)} percent accuracy. ${run.xp} XP earned.`);
   $('results').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'nearest'});
+  if(current.mode==='ghost'&&completed){const won=!ghost||!ghost.events.length||run.seconds*1000<ghost.events.at(-1)[0];showGameDialog({won,title:!ghost?'Your ghost is ready':won?'You beat your ghost!':'The ghost wins',reason:!ghost?'Your first replay is set. Restart to race against this run.':won?'You finished before your previous replay. This is your new ghost.':'Your previous replay finished first. Restart and try to beat it.',score:1,scoreLabel:'passage completed',level:'Ghost Race',onRestart:()=>restartCurrent(true)});}
 }
 
 function buildKeyboard(host,interactive=false){
@@ -198,15 +201,27 @@ function renderKeyDetail(key){
 }
 function renderGames(){
   $('main').innerHTML=heading('A LITTLE PLAY GOES A LONG WAY','Welcome to the arcade.','Same skills. A different kind of challenge.')+`<div class="games-grid"><article class="game-card"><div class="game-art" aria-hidden="true"><div class="invader-art"><span>rhythm</span><span>keyboard</span><span>focus</span><span>practice</span></div></div><div class="game-card-body"><div class="eyebrow">QUICK THINKING · CLEAN TYPING</div><h2>Type Invaders</h2><p>Words are falling. Type the highlighted word before it reaches the ground. Words clear automatically.</p><a class="button" href="#games?play=invaders">Defend your keyboard ↗</a></div></article><article class="game-card"><div class="game-art" aria-hidden="true"><div class="race-art"><div></div><div></div></div></div><div class="game-card-body"><div class="eyebrow">PERSONAL BEST · PERSONAL RIVAL</div><h2>Ghost Race</h2><p>Your strongest opponent is your previous self. Finish a passage to set your ghost, then race its actual replay.</p><a class="button" href="#games?play=ghost">${store.data.ghosts.classic?'Race your ghost':'Set your first ghost'} ↗</a></div></article></div><p class="game-note">Every completed game trains the same skill map as your practice sessions.</p><section class="panel" style="margin-top:28px">${recommendation()}</section>`;
+  $('main').querySelector('.games-grid').insertAdjacentHTML('beforeend',
+    `<article class="game-card"><div class="game-art survival-art" aria-hidden="true"><span class="arcade-art-symbol">◷</span><span class="art-orbit"></span></div><div class="game-card-body"><div class="eyebrow">BEAT THE FUSE · EVERY WORD COUNTS</div><h2>Type Survival</h2><p>Two minutes, three hearts, and a timer for every word. Clear words to climb from Easy to Extra hard.</p><a class="button" href="#games?play=survival">Beat the fuse ↗</a></div></article><article class="game-card"><div class="game-art dungeon-art" aria-hidden="true"><span class="dungeon-door">♜</span><span class="dungeon-stars">· ✦ ·</span></div><div class="game-card-body"><div class="eyebrow">FOUR ROOMS · FOUR SENTENCE BOSSES</div><h2>Typing Dungeon</h2><p>Defeat word enemies, then tackle a sentence boss. Clear all four rooms before your hearts or time run out.</p><a class="button" href="#games?play=dungeon">Enter the dungeon ↗</a></div></article>`);
+}
+function renderChallenge(mode){
+  const restart=()=>{stopRun();renderChallenge(mode);challenge.start();};
+  challenge=renderWordGame($('main'),mode,{
+    onStart(engine){session=engine;current={mode,name:mode==='dungeon'?'Typing Dungeon':'Type Survival',track:'words',duration:engine.duration,strict:true,indent:false,id:crypto.randomUUID()};saved=false;ensureTick();},
+    onEnd(outcome){finishRun();const title=document.querySelector('#results .result-head h2');if(title)title.textContent=outcome.won?'Challenge complete!':'Game over — try again.';notify(outcome.reason);showGameDialog({...outcome,onRestart:restart});},
+    onRestart:restart,announce:notify
+  });
 }
 function renderInvaders(){
-  $('main').innerHTML=heading('60 SECONDS · 10 SHIELDS','Type Invaders.','Type the highlighted word to clear it. Wrong letters and escaped words cost a shield.',`<a href="#games" class="button secondary">← Arcade</a>`)+`<section class="typing-panel"><div class="typing-top"><span><span class="session-dot"></span><span id="invaderStatus">Ready to defend</span></span><div class="live-metrics"><span><b id="gameScore">0</b> cleared</span><span><b id="gameHealth">10</b> shields</span><span><b id="gameTime">60</b>s left</span></div></div><div id="arena" class="arena" aria-label="Falling word arena"><div class="arena-start" id="arenaStart"><h2>Keep the words from landing.</h2><p>Type the word highlighted in green. It clears as soon as you finish it. You have 10 shields and 60 seconds.</p><button class="button" id="startInvaders">Start defending ↗</button></div></div><div class="game-target">Current target <strong id="targetWord">Start the game to begin</strong><span>Words clear automatically · Space is optional</span></div><div class="invader-input-row"><label for="invaderInput" class="sr-only">Type the highlighted word</label><input id="invaderInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="The highlighted word goes here…" disabled><button class="button secondary" id="gameRestart">Restart</button></div></section><p class="practice-note">Wrong letter: −1 shield · Escaped word: −2 shields · Every 5 cleared words raises the pace.</p><div id="results"></div>`;
-  $('startInvaders').addEventListener('click',startInvaders);$('gameRestart').addEventListener('click',()=>{stopRun();renderInvaders();});
+  $('main').innerHTML=heading('60 SECONDS · 10 SHIELDS','Type Invaders.','Type the highlighted word to clear it. Wrong letters and escaped words cost a shield.',`<a href="#games" class="button secondary">← Arcade</a>`)+`<section class="typing-panel"><div class="typing-top"><span><span class="session-dot"></span><span id="invaderStatus">Ready to defend</span></span><div class="live-metrics"><span><b id="gameScore">0</b> cleared</span><span><b id="gameHealth">10</b> shields</span><span><b id="gameTime">60</b>s left</span></div></div><div id="arena" class="arena" aria-label="Falling word arena"><div class="arena-start" id="arenaStart"><h2>Keep the words from landing.</h2><p>Type the word highlighted in green. It clears as soon as you finish it. You have 10 shields and 60 seconds.</p><button class="button" id="startInvaders">Start defending ↗</button></div></div><div class="game-target">Current target <strong id="targetWord">Start the game to begin</strong><span>Words clear automatically · Space is optional</span></div><div class="invader-input-row"><label for="invaderInput" class="sr-only">Type the highlighted word</label><input id="invaderInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="The highlighted word goes here…" disabled><button class="button secondary" id="gameRestart">Restart</button></div></section><p class="practice-note">Wrong letter: −1 shield · Escaped word: −2 shields · Speed rises after every word · Easy → Normal → Hard → Expert → Extra hard.</p><div id="results"></div>`;
+  $('startInvaders').addEventListener('click',startInvaders);$('gameRestart').addEventListener('click',()=>{stopRun();renderInvaders();startInvaders();});
 }
 function startInvaders(){
   session=new TypingSession('',{strict:true,duration:60});session.started=performance.now();current={mode:'invaders',name:'Type Invaders',track:'words',duration:60,strict:true,indent:false,id:crypto.randomUUID()};saved=false;
   invaders={enemies:[],score:0,health:10,lastSpawn:performance.now(),lastFrame:performance.now(),id:0};
   $('arenaStart').remove();$('invaderInput').disabled=false;$('invaderInput').focus();spawnEnemy();
+  const level=document.createElement('div');level.className='arcade-level-bar';level.innerHTML='<strong id="arcadeLevel">Level 1 · Easy</strong><span id="arcadePace">1.0× pace</span><div class="arcade-level-track"><i id="arcadeLevelFill"></i></div><span id="levelToast" role="status"></span>';
+  $('arena').before(level);
   const input=$('invaderInput');
   input.addEventListener('paste',e=>e.preventDefault());input.addEventListener('drop',e=>e.preventDefault());
   input.addEventListener('input',e=>{if(e.isComposing)return;if(e.inputType==='insertFromPaste'||e.inputType==='insertFromDrop'){paintEnemies();return;}if(e.inputType==='deleteContentBackward'){undoGameKey();return;}typeInvaderText(e.data||'');});
@@ -220,7 +235,7 @@ function startInvaders(){
   ensureTick();
 }
 function spawnEnemy(){
-  if(!invaders)return;const word=pick(WORDS.filter(w=>w.length>=3&&w.length<=Math.min(10,5+Math.floor(invaders.score/5))));
+  if(!invaders)return;const word=arcadeWord(invaders.score);
   const start=session.chars.length;session.append(word+' ');const el=document.createElement('div');el.className='enemy';el.textContent=word;$('arena').append(el);
   // Three lanes keep new words apart on narrow screens.
   const lane=invaders.id++%3,arena=$('arena');const x=clamp(lane*(arena.clientWidth/3)+12,6,Math.max(6,arena.clientWidth-el.offsetWidth-8));
@@ -236,7 +251,8 @@ function typeInvaderText(text){
     const target=invaders.enemies[0];
     if(target&&session.index>=target.end-1){
       session.status[session.index++]=3; // separator is automatic, not a scored keystroke
-      target.el.remove();invaders.enemies.shift();invaders.score++;
+      target.el.classList.add('enemy-cleared');setTimeout(()=>target.el.remove(),240);invaders.enemies.shift();invaders.score++;
+      const toast=$('levelToast');toast.textContent=`Level ${invaders.score+1} · ${difficultyFor(invaders.score).name}`;toast.classList.remove('level-pop');void toast.offsetWidth;toast.classList.add('level-pop');
       if(!invaders.enemies.length)spawnEnemy();
     }
     if(invaders.health<=0){session.finish(performance.now());break;}
@@ -244,7 +260,7 @@ function typeInvaderText(text){
   paintEnemies();paintGameCounters();if(session.done)endInvaders();
 }
 function undoGameKey(){const target=invaders?.enemies[0];if(target&&session.index>target.start){session.backspace(performance.now());paintEnemies();}}
-function paintGameCounters(){if(!invaders)return;$('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('gameTime').textContent=Math.max(0,Math.ceil(60-session.elapsed(performance.now())));}
+function paintGameCounters(){if(!invaders)return;const difficulty=difficultyFor(invaders.score);$('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('gameTime').textContent=Math.max(0,Math.ceil(60-session.elapsed(performance.now())));if($('arcadeLevel')){$('arcadeLevel').textContent=`Level ${difficulty.level} · ${difficulty.name}`;$('arcadePace').textContent=`${(difficulty.speed/22).toFixed(1)}× pace`;$('arcadeLevelFill').style.width=clamp(invaders.score/35*100,0,100)+'%';}}
 function paintEnemies(){
   if(!invaders)return;
   for(const enemy of invaders.enemies){enemy.el.classList.toggle('target',enemy===invaders.enemies[0]);const progress=clamp(session.index-enemy.start,0,enemy.word.length);enemy.el.innerHTML=`<b>${esc(enemy.word.slice(0,progress))}</b>${esc(enemy.word.slice(progress))}`;}
@@ -257,18 +273,26 @@ function paintEnemies(){
 function tickInvaders(now){
   if(!invaders)return;const delta=(now-invaders.lastFrame)/1000;invaders.lastFrame=now;
   if(session.expired(now)){session.finish(now);endInvaders();return;}
-  if(now-invaders.lastSpawn>Math.max(1100,3100-invaders.score*45)){spawnEnemy();invaders.lastSpawn=now;}
-  for(const enemy of [...invaders.enemies]){enemy.y+=delta*(20+Math.floor(invaders.score/5)*5);enemy.el.style.transform=`translate(${enemy.x}px,${enemy.y}px)`;
+  const difficulty=difficultyFor(invaders.score);
+  if(now-invaders.lastSpawn>difficulty.spawnMs){spawnEnemy();invaders.lastSpawn=now;}
+  for(const enemy of [...invaders.enemies]){enemy.y+=delta*difficulty.speed;enemy.el.style.transform=`translate(${enemy.x}px,${enemy.y}px)`;
     if(enemy.y>$('arena').clientHeight-enemy.el.offsetHeight){invaders.health-=2;enemy.el.remove();invaders.enemies=invaders.enemies.filter(e=>e!==enemy);while(session.index<enemy.end){session.status[session.index++]=3;}paintEnemies();}}
   if(invaders.health>0&&!invaders.enemies.length){spawnEnemy();invaders.lastSpawn=now;}
-  $('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('gameTime').textContent=Math.max(0,Math.ceil(60-session.elapsed(now)));$('invaderStatus').textContent=`Wave ${1+Math.floor(invaders.score/5)} · keep your rhythm`;
+  paintGameCounters();$('invaderStatus').textContent=`${difficulty.name} · Level ${difficulty.level} · speed rises after every word`;
   if(invaders.health<=0)session.finish(now);if(session.done)endInvaders();
 }
-function endInvaders(){if(!invaders)return;$('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('invaderStatus').textContent=invaders.health<=0?'Shields down · try another run':'Time’s up · well defended';$('invaderInput').disabled=true;if(session.attempts===0){session.attempts=0;$('results').innerHTML='<div class="notice" style="margin-top:20px">No keystrokes recorded. Choose Restart to play again. No progress was saved.</div>';return;}finishRun();}
+function endInvaders(){
+  if(!invaders||invaders.ended)return;invaders.ended=true;
+  const won=invaders.health>0;paintGameCounters();$('invaderStatus').textContent=won?'Time’s up · well defended':'Shields down · game over';$('invaderInput').disabled=true;
+  if(session.attempts===0)$('results').innerHTML='<div class="notice" style="margin-top:20px">No keystrokes recorded. Restart to try again. No progress was saved.</div>';else finishRun();
+  const title=document.querySelector('#results .result-head h2');if(title&&!won)title.textContent='Game over — try again.';
+  const reason=won?'You defended the keyboard for 60 seconds. Ready for a faster run?':'Your shields are gone. Restart to build your rhythm and try again.';
+  notify(reason);showGameDialog({won,reason,score:invaders.score,level:difficultyFor(invaders.score).name,onRestart:()=>{stopRun();renderInvaders();startInvaders();}});
+}
 
 function renderStats(){
   const db=store.data,filter=params.get('filter')||'all';
-  const runs=db.runs.filter(r=>filter==='all'||filter==='practice'&&r.mode==='practice'||filter==='games'&&['ghost','invaders'].includes(r.mode)||filter==='test60'&&r.mode==='test'&&r.duration===60&&!r.strict);
+  const runs=db.runs.filter(r=>filter==='all'||filter==='practice'&&r.mode==='practice'||filter==='games'&&GAME_MODES.includes(r.mode)||filter==='test60'&&r.mode==='test'&&r.duration===60&&!r.strict);
   const recent=runs.slice(-10),weak=weakKeys(db.keys,8),pairs=Object.entries(db.pairs).filter(([,v])=>v.att>=3&&v.err>0).sort((a,b)=>b[1].err/b[1].att-a[1].err/a[1].att).slice(0,5);
   $('main').innerHTML=heading('MORE THAN A NUMBER','Meet your typing skill map.','Your speed, habits, and opportunities to improve. Built from real sessions.',selectField('statsFilter','Session history',[['test60','Standard 60s tests'],['practice','Practice'],['games','Games'],['all','All sessions']],filter))+
     `<div class="metric-grid">${metric('Saved sessions',runs.length,'',filter==='all'?'Last 1,000 sessions retained':'In the selected history')}${metric('Average speed',recent.length?fmt(average(recent.map(r=>r.wpm))):'—','WPM','Last 10 · selected history',true)}${metric('Average accuracy',recent.length?fmt(average(recent.map(r=>r.acc)),1):'—','%','Last 10 · selected history')}${metric('Lifetime characters',db.chars.toLocaleString(),'','Correct characters · all modes')}</div>`+
@@ -279,7 +303,7 @@ function renderStats(){
 }
 function renderProfile(){
   const db=store.data,level=Math.floor(db.xp/250)+1;
-  const achievements=[['↗','First steps','Complete your first session.',db.runs.length>0],['◎','Precision','Finish 100+ characters at 98% accuracy.',db.runs.some(r=>r.chars>=100&&r.acc>=98)],['◷','Finding flow','Reach 60 WPM in a standard 60s test.',db.runs.some(r=>r.mode==='test'&&r.duration===60&&!r.strict&&r.wpm>=60)],['♧','Player one','Complete a game in the arcade.',db.runs.some(r=>['ghost','invaders'].includes(r.mode))]];
+  const achievements=[['↗','First steps','Complete your first session.',db.runs.length>0],['◎','Precision','Finish 100+ characters at 98% accuracy.',db.runs.some(r=>r.chars>=100&&r.acc>=98)],['◷','Finding flow','Reach 60 WPM in a standard 60s test.',db.runs.some(r=>r.mode==='test'&&r.duration===60&&!r.strict&&r.wpm>=60)],['♧','Player one','Complete a game in the arcade.',db.runs.some(r=>GAME_MODES.includes(r.mode))]];
   const themes=[['void','Void',['#101312','#2a332d','#c0e88d']],['paper','Paper',['#f6f5ef','#dcded2','#487032']],['ocean','Ocean',['#0c1720','#294452','#83d6de']],['terminal','Terminal',['#09110b','#29482e','#8fe88b']]];
   $('main').innerHTML=heading('MAKE YOURSELF AT HOME','Your own kind of progress.','Small wins add up. Keep a little record of yours.')+`<section class="panel profile-hero"><div class="avatar">Y</div><div><div class="eyebrow">LOCAL TYPIST</div><h2>${levelName(db.xp)}</h2><p>Level ${level} · ${db.xp.toLocaleString()} total XP · ${streak(db.runs)} day streak</p></div><div class="level-progress"><p><span>Next level</span><span>${db.xp%250} / 250 XP</span></p><div class="level-track"><i style="width:${db.xp%250/250*100}%"></i></div></div></section><div class="section-heading"><h2>A few milestones along the way</h2><span>${achievements.filter(a=>a[3]).length} / ${achievements.length} earned</span></div><div class="achievement-grid">${achievements.map(([i,t,d,earned])=>`<div class="achievement${earned?' earned':''}"><div class="achievement-icon" aria-hidden="true">${i}</div><h3>${t}</h3><p>${d}</p><small>${earned?'EARNED':'AHEAD OF YOU'}</small></div>`).join('')}</div><section class="panel"><div class="section-heading"><h2>Set the mood</h2><span>All themes available</span></div><p style="font-size:12px">A quieter screen. A different shade. Make this space yours.</p><div class="theme-grid">${themes.map(([key,name,colors])=>`<button class="theme-card" data-theme-choice="${key}" aria-pressed="${db.settings.theme===key}"><span class="theme-swatches">${colors.map(c=>`<i style="background:${c}"></i>`).join('')}</span>${name}</button>`).join('')}</div><div class="data-tools"><h3>Your progress belongs to you.</h3><p>Stored in this browser, with no account needed. Export a backup to move devices. Import replaces the current profile. Backups from earlier versions are supported.</p><div class="button-row"><button class="button secondary" id="exportBtn">Export progress ↓</button><button class="button secondary" id="importBtn">Import backup ↑</button><input id="importFile" class="file-input" type="file" accept="application/json,.json" aria-label="Import progress backup"><button class="text-link" id="resetBtn" style="color:var(--error)">Reset progress</button></div><p id="importStatus" role="status"></p></div></section>`;
   document.querySelectorAll('[data-theme-choice]').forEach(b=>b.addEventListener('click',()=>{db.settings.theme=b.dataset.themeChoice;store.save();applyTheme(db.settings.theme);renderProfile();}));
@@ -294,7 +318,8 @@ function renderRoute(){
   const [path,query='']=(location.hash.slice(1)||'home').split('?');route=Object.hasOwn(titles,path)?path:'home';params=new URLSearchParams(query);updateChrome();
   if(route==='home')renderHome();
   if(route==='practice'||route==='test'){const track=params.get('track');if(Object.hasOwn(trackNames,track))options.track=track;options.targetKey=params.get('key')?.slice(0,1)||'';renderPractice(route);}
-  if(route==='games'){if(params.get('play')==='ghost')renderPractice('ghost');else if(params.get('play')==='invaders')renderInvaders();else renderGames();}
+  if(route==='games'){if(params.get('play')==='ghost')renderPractice('ghost');else if(params.get('play')==='invaders')renderInvaders();else if(['survival','dungeon'].includes(params.get('play')))renderChallenge(params.get('play'));else renderGames();}
+  if(route==='learn')renderHandGuide($('main'), text=>{options.custom=text;options.track='custom';options.strict=true;location.hash='practice?track=custom';});
   if(route==='stats')renderStats();if(route==='profile')renderProfile();
   if(store.warning){const note=document.createElement('p');note.className='notice';note.textContent=store.warning;$('main').prepend(note);}
   window.scrollTo(0,0);
@@ -309,7 +334,8 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)checkpoint(
 document.addEventListener('keydown',e=>{
   if(e.defaultPrevented||e.isComposing||e.ctrlKey||e.metaKey||e.altKey||!session||session.done)return;
   if(e.target.closest?.('input,textarea,select,button,a,[contenteditable]'))return;
-  if(invaders&&e.key.length===1){e.preventDefault();$('invaderInput').focus();typeInvaderText(e.key);}
-  else if(!invaders&&(e.key.length===1||e.key==='Enter')){e.preventDefault();$('typingInput').focus();if(e.key!=='Enter')consume(e.key);}
+  if(challenge?.started&&e.key.length===1){e.preventDefault();$('challengeInput').focus();challenge.type(e.key);}
+  else if(invaders&&e.key.length===1){e.preventDefault();$('invaderInput').focus();typeInvaderText(e.key);}
+  else if(!invaders&&!challenge&&(e.key.length===1||e.key==='Enter')){e.preventDefault();$('typingInput').focus();if(e.key!=='Enter')consume(e.key);}
 });
 applyTheme(store.data.settings.theme);renderRoute();

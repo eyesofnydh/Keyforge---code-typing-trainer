@@ -15,7 +15,7 @@ export function validateProfile(input) {
     return { t: r.t, wpm: r.wpm, acc: r.acc, name: r.name || 'Imported run', raw: number(r.raw, 100000) ? r.raw : r.wpm,
       cons: number(r.cons, 100) ? r.cons : null, errors: number(r.errors) ? r.errors : 0, chars: number(r.chars) ? r.chars : 0,
       seconds: number(r.seconds, 86400) ? r.seconds : 0, attempts: number(r.attempts) ? r.attempts : 0,
-      mode: ['practice', 'test', 'invaders', 'ghost'].includes(r.mode) ? r.mode : 'legacy',
+      mode: ['practice', 'test', 'invaders', 'ghost', 'survival', 'dungeon'].includes(r.mode) ? r.mode : 'legacy',
       track: text(r.track, 30) ? r.track : 'legacy', duration: number(r.duration, 600) ? r.duration : 0,
       strict: Boolean(r.strict), indent: Boolean(r.indent), backspaces: number(r.backspaces) ? r.backspaces : 0,
       xp: number(r.xp, 500) ? r.xp : 0, id: text(r.id, 80) ? r.id : '', completed: r.completed !== false };

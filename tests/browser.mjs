@@ -43,13 +43,14 @@ await page.clock.runFor(10100);
 await page.getByRole('region',{name:'Session results'}).waitFor();
 db=await page.evaluate(()=>JSON.parse(localStorage.getItem('keyforge.v2')));
 assert.equal(db.runs.at(-1).duration,10);assert.equal(db.runs.at(-1).seconds,10);
-await page.getByRole('link',{name:'Arcade 2',exact:true}).click();
+await page.getByRole('link',{name:'Arcade 4',exact:true}).click();
 await page.getByRole('link',{name:'Set your first ghost',exact:false}).click();
 const ghostText=await page.locator('#passage').innerText();
 await page.locator('#typingInput').pressSequentially(ghostText,{delay:3});
 await page.getByRole('region',{name:'Session results'}).waitFor();
 db=await page.evaluate(()=>JSON.parse(localStorage.getItem('keyforge.v2')));
 assert.ok(db.ghosts.classic.events.length>0);assert.equal(db.runs.at(-1).mode,'ghost');
+await page.getByRole('button',{name:'View results',exact:true}).click();
 await page.getByRole('button',{name:/^Race again/}).click();
 await page.locator('#typingInput').pressSequentially(ghostText.slice(0,5),{delay:3});
 await page.clock.runFor(1000);
@@ -63,6 +64,7 @@ assert.equal(await page.locator('#gameScore').innerText(),'1');
 await page.clock.runFor(61000);
 db=await page.evaluate(()=>JSON.parse(localStorage.getItem('keyforge.v2')));
 assert.equal(db.runs.at(-1).mode,'invaders');
+await page.getByRole('button',{name:'View results',exact:true}).click();
 await page.goto(base+'/#practice?track=code');
 await page.locator('#langInput').selectOption('python');
 assert.match(await page.locator('#drillName').innerText(),/Python/);
@@ -73,7 +75,7 @@ assert.equal(await page.locator('.sidebar').isVisible(),true);
 await page.screenshot({path:'work/practice-desktop.png',fullPage:true});
 for(const width of [390,320]){
   await page.setViewportSize({width,height:844});
-  for(const route of ['home','practice','test','games','games?play=ghost','games?play=invaders','stats','profile']){
+  for(const route of ['home','practice','test','games','games?play=ghost','games?play=invaders','games?play=survival','games?play=dungeon','learn','stats','profile']){
     await page.goto(base+'/#'+route);
     await page.locator('h1').waitFor();
     const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);

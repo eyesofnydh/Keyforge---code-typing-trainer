@@ -20,8 +20,12 @@ Open **http://127.0.0.1:4173**. No install, account, API key, database, or exter
 - **Speed tests:** 15, 30, 60, 120, or a custom 10–600 seconds. Timing starts on the first typed character and text replenishes during a test.
 - **Accuracy mode:** incorrect attempts cannot advance the cursor. Standard mode lets the user correct mistakes with Backspace.
 - **Focus view:** hides navigation, setup controls, and live statistics until the result. Exit using the visible button or Escape.
-- **Type Invaders:** a 60-second falling-word game with 10 shields, increasing pace, and shared per-key tracking. Type the highlighted word; it clears automatically. Spaces between words are optional. The current target and typed prefix stay visible. Wrong characters cost one shield; escaped words cost two. Interrupted games save partial progress.
+- **Type Invaders:** a 60-second falling-word game with 10 shields and shared per-key tracking. Speed increases after every cleared word and spawn intervals shorten, with visible Easy / Normal / Hard / Expert / Extra hard tiers. Later words are longer and add punctuation. Words clear automatically; Spaces between words are optional. Loss and time-limit completion show an animated outcome dialog with immediate restart. Interrupted games save partial progress.
 - **Ghost Race:** one fixed original passage; the first completed race sets a replay, and faster races replace it. The ghost follows actual keystroke positions and corrections, rather than a simulated constant speed.
+- **Type Survival:** a two-minute run with three hearts and a deadline per word. Each clear shortens the next word's time window. Wrong characters and expired words cost hearts. Surviving the full timer wins the run.
+- **Typing Dungeon:** four rooms, each with three word enemies and a sentence boss. Clear all sixteen encounters with five hearts and a three-minute overall limit. Bosses include real sentence spacing, capitals, and punctuation.
+- **Hand placement:** an interactive US QWERTY finger map, labelled left/right hand illustrations, F/J raised-bump anchors, finger selectors, Shift/Space guidance, and short home-row or F/J drills that feed into regular progress. Smaller screens stack the hand diagrams to keep them readable.
+- **Arcade feedback:** clear win/loss dialogs, shield-break and victory animations, word-clear effects, level feedback, and working restart/results/arcade actions. Animations respect reduced-motion preferences.
 - **Skill map:** interactive US QWERTY heatmap, key accuracy and interval timing, mistaken characters, frequently missed letter pairs, targeted drills, filtered history, and speed trends.
 - **Profile:** XP, levels, calendar-day streaks, four earned achievements, and Void / Paper / Ocean / Terminal themes.
 - **Progress:** shared statistics across practice and games, local browser storage, validated JSON export/import, migration from the original `keyforge.v1` profile, and confirmed reset.
@@ -49,9 +53,12 @@ Optional browser verification uses Playwright (`1.59.1` was used during developm
 ```sh
 node tests/browser.mjs
 node tests/regressions.mjs
+node tests/arcade-browser.mjs
 ```
 
 Set `KEYFORGE_URL` to change the preview address. Browser checks cover completed practice and corrections, persistence, deadlines, replays, games, code, themes, focus, imports, export, reset confirmation, and overflow at 390px and 320px. Regression checks exercise real page scrolling and fixed desktop navigation, interrupted sessions, reload checkpoints, manual finish, non-60-second benchmarks, weighted accuracy, and a game run with repeated word clears, optional separators, shield loss, and game over. Temporary screenshots go to ignored `work/`. These checks cover the listed scenarios, not every possible device or interaction.
+
+The arcade suite checks per-word acceleration through Extra hard, actual loss animations and immediate restarts, loss without typed input, survival defeat, all four dungeon sentence bosses and final victory, finger/key highlighting, a completed F/J drill, reduced-motion behavior, new-game persistence, and layouts at 815px, 390px, and 320px. Unit checks also cover difficulty caps, deadline boundaries, each game's state transitions, and every shifted/unshifted QWERTY finger assignment.
 
 ## Redeploy to Netlify
 
@@ -63,10 +70,10 @@ This creates **dist/** with the complete static app and a cache-revalidation hea
 
 ## Product roadmap
 
-1. **This release — the typing gym:** everyday practice, preserved code tracks, timed tests, two working games, shared skill map, local progression, and themes.
+1. **This release — the typing gym:** everyday practice, preserved code tracks, timed tests, four arcade games, animated outcomes, progressive difficulty, a visual hand-placement guide, shared skill map, local progression, and themes.
 2. **Learning depth:** beginner lessons, richer prose packs, longer-pattern analysis, personal practice goals, daily/weekly challenges, and more achievements. Separate time-on-task and consistency evidence before adding a distinct rhythm score.
 3. **Adaptive sessions:** generate deterministic exercises from errors and common letter combinations, then evaluate whether users improve. Optional AI-generated exercises can follow once the local recommendations are useful.
-4. **More play:** survival, short dungeon runs, and optional rhythm exercises with reduced-motion and sound settings.
+4. **More play:** weak-key-based boss encounters, custom challenge paths, and optional rhythm exercises with reduced-motion and sound settings.
 5. **Connected features:** optional accounts and sync, friend challenges, multiplayer, and leaderboards with comparable scoring and replay validation.
 
 ### Naming

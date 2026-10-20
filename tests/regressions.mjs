@@ -83,7 +83,7 @@ try {
   }
   // Spawn a queued word and allow the active one to escape.
   await page.clock.pauseAt(new Date(await page.evaluate(()=>Date.now()+1000)));
-  await page.clock.runFor(13000);
+  await page.clock.runFor(7500);
   assert.ok(Number(await page.locator('#gameHealth').textContent())>0);
   const nextWord=await page.locator('#targetWord').textContent();
   assert.match(nextWord,/^[a-z]+$/);
@@ -94,6 +94,7 @@ try {
   assert.equal(await page.locator('#gameHealth').textContent(),'0');
   assert.equal((await profile()).runs.at(-1).mode,'invaders');
   assert.equal((await profile()).runs.at(-1).completed,true);
+  await page.getByRole('button',{name:'View results',exact:true}).click();
   assert.ok((await profile()).runs.at(-1).attempts>=attempts);
   const count=(await profile()).runs.length;
   await page.getByRole('link',{name:'Overview',exact:true}).click();

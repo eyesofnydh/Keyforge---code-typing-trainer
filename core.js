@@ -122,6 +122,6 @@ export function benchmarkForRuns(runs) {
   const reference = standard.at(-1) || tests.at(-1) || eligible.filter(r => r.mode === 'practice').at(-1) || eligible.at(-1);
   if (!reference) return { runs: [], best: null, note: 'Finish a practice session or speed test', href: '#test' };
   const matching = eligible.filter(r => comparable(r, reference));
-  const kind = reference.mode === 'test' ? `${reference.duration}s test` : reference.mode === 'practice' ? 'Practice' : reference.mode === 'ghost' ? 'Ghost Race' : reference.mode === 'invaders' ? 'Type Invaders' : 'Imported sessions';
+  const kind = reference.mode === 'test' ? `${reference.duration}s test` : reference.mode === 'practice' ? 'Practice' : ({ghost:'Ghost Race',invaders:'Type Invaders',survival:'Type Survival',dungeon:'Typing Dungeon'}[reference.mode] || 'Imported sessions');
   return { runs: matching, best: Math.max(...matching.map(r => r.wpm)), note: `${kind} · ${reference.track === 'legacy' ? 'original drills' : reference.track} · ${reference.strict ? 'accuracy mode' : 'standard mode'}`, href: reference.mode === 'test' ? '#test' : '#practice' };
 }
