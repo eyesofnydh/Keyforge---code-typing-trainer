@@ -1,843 +1,315 @@
-/* ==========================================================================
-   Keyforge — typing engine, per-key tracking, progress
-   ========================================================================== */
+import { LANGUAGES, SYMBOL_SETS, SNIPPETS, KEY_ROWS, KEY_FOR_CHAR } from './data.js';
+import { TypingSession, average, clamp, ghostPosition, localDay, streak, weakKeys, comparable, accuracyForRuns, benchmarkForRuns } from './core.js';
+import { makeText, pick, WORDS, PASSAGES } from './content.js';
+import { createStore } from './storage.js';
 
-import { LANGUAGES, SYMBOL_SETS, KEYWORDS, SNIPPETS, KEY_ROWS, KEY_FOR_CHAR } from './data.js';
+const $ = id => document.getElementById(id);
+const esc = value => String(value).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch]);
+const fmt = (value, decimals = 0) => Number.isFinite(value) ? value.toFixed(decimals) : '—';
+const labelKey = key => key === ' ' ? 'Space' : key === '\n' ? 'Enter' : key.toUpperCase();
+const date = value => new Date(value).toLocaleDateString(undefined, { month:'short', day:'numeric' });
+const notify = text => { $('announcer').textContent = text; };
+let backing = null;
+try { backing = window.localStorage; } catch {}
+const store = createStore(backing);
+let route = 'home', params = new URLSearchParams(), frame = null, session = null, current = null, saved = false;
+let ghost = null, painted = -1, spans = [], invaders = null;
+const options = { track:'words', length:'medium', lang:'javascript', codeTrack:'snippets', snippet:0, symbolSet:'mixed', duration:60, strict:false, keyboard:true, indent:true, focus:false, custom:'', targetKey:'' };
+const titles = { home:'Overview', practice:'Practice', test:'Speed test', games:'Arcade', stats:'Skill map', profile:'Your profile' };
+const levelName = xp => xp >= 10000 ? 'Velocity' : xp >= 4000 ? 'Key Runner' : xp >= 1500 ? 'Flow Typist' : 'Key Scout';
 
-/* --- tiny helpers ------------------------------------------------------- */
-const $ = (id) => document.getElementById(id);
-const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-const fmt = (n, d = 0) => n.toFixed(d);
-
-/* --- persistence --------------------------------------------------------
-   Progress lives in memory first, so the app works anywhere. When the page has
-   usable web storage (running locally or in its own tab) it also writes there
-   so history survives reloads. Embedded previews block storage — the probe
-   below simply fails and we stay in memory for the session. Export/Import in
-   the Progress panel moves history between the two.
-   ----------------------------------------------------------------------- */
-const KEY = 'keyforge.v1';
-const EMPTY = () => ({ runs: [], keys: {}, chars: 0 });
-const store = (() => {
-  let backing = null;
-  try {
-    const web = globalThis[['local', 'Storage'].join('')];
-    if (web) {
-      web.setItem(KEY + '.probe', '1');
-      web.removeItem(KEY + '.probe');
-      backing = web;
-    }
-  } catch {
-    backing = null;
-  }
-  let mem = null;
-  return {
-    persistent: Boolean(backing),
-    load() {
-      if (mem) return mem;
-      let data = null;
-      if (backing) {
-        try {
-          data = JSON.parse(backing.getItem(KEY) || 'null');
-        } catch {
-          data = null;
-        }
-      }
-      mem = data || EMPTY();
-      return mem;
-    },
-    replace(data) {
-      mem = data;
-      this.save();
-    },
-    save() {
-      if (!backing || !mem) return;
-      try {
-        backing.setItem(KEY, JSON.stringify(mem));
-      } catch {
-        /* quota or blocked — memory only */
-      }
-    },
-    reset() {
-      mem = EMPTY();
-      if (backing) {
-        try {
-          backing.removeItem(KEY);
-        } catch {
-          /* ignore */
-        }
-      }
-    },
-  };
-})();
-
-/* --- theme -------------------------------------------------------------- */
-const SUN =
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
-const MOON =
-  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
-(function theme() {
-  const btn = document.querySelector('[data-theme-toggle]');
-  const root = document.documentElement;
-  let mode = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  const apply = () => {
-    root.setAttribute('data-theme', mode);
-    btn.innerHTML = mode === 'dark' ? SUN : MOON;
-    btn.setAttribute('aria-label', `Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`);
-  };
-  apply();
-  btn.addEventListener('click', () => {
-    mode = mode === 'dark' ? 'light' : 'dark';
-    apply();
-    if (!$('statsPanel').hidden) renderStats();
-  });
-})();
-
-/* --- selection state ---------------------------------------------------- */
-const sel = {
-  track: 'symbols',
-  symbolSet: 'brackets',
-  lang: 'javascript',
-  snippet: 0,
-  length: 'medium',
-  heatMetric: 'errors',
-};
-const opts = { strict: true, indent: true, keyboard: true };
-const LENGTHS = { short: 4, medium: 7, long: 11 };
-
-/* --- drill generation --------------------------------------------------- */
-function lineOf(groups, per) {
-  const out = [];
-  for (let i = 0; i < per; i++) out.push(pick(groups));
-  return out.join(' ');
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]').content = theme === 'paper' ? '#f6f5ef' : '#101312';
+  $('themeToggle').setAttribute('aria-label', theme === 'paper' ? 'Switch to dark theme' : 'Switch to light theme');
+}
+function updateChrome() {
+  const db = store.data;
+  $('sidebarLevel').textContent = `Level ${Math.floor(db.xp / 250) + 1} · ${levelName(db.xp)}`;
+  const days = streak(db.runs);
+  $('streakBadge').textContent = `${days} day streak`;
+  $('storageStatus').textContent = store.persistent ? 'Progress saved on this device' : 'Session only · export to keep your progress';
+  document.querySelectorAll('[data-nav]').forEach(a => { if (a.dataset.nav === route) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  $('breadcrumb').innerHTML = `Workspace <span>/</span> ${titles[route]}`;
+  document.title = `${titles[route]} · TypePoise`;
+}
+function heading(eyebrow, title, subtitle, action = '') {
+  return `<div class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${subtitle}</p></div>${action}</div>`;
+}
+function metric(label, value, unit = '', note = '', good = false) {
+  return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}${unit ? `<small>${unit}</small>` : ''}</div><div class="metric-note${good?' good':''}">${note || '&nbsp;'}</div></div>`;
+}
+function card(href, icon, title, description, foot) {
+  return `<a class="mode-card" href="${href}"><span class="mode-icon" aria-hidden="true">${icon}</span><h3>${title}</h3><p>${description}</p><div class="card-bottom"><span>${foot}</span><span aria-hidden="true">↗</span></div></a>`;
+}
+function recommendation() {
+  const weak = weakKeys(store.data.keys, 3);
+  return `<div class="recommendation"><div class="eyebrow">YOUR NEXT SMALL WIN</div><h2>${weak.length ? 'Turn a weak spot into a strength.' : 'Let’s find your starting point.'}</h2><p>${weak.length ? 'These keys take a little more effort. Give them a focused practice session.' : 'Finish a few sessions to discover your problem keys and get a targeted drill.'}</p>${weak.length ? `<div class="key-pills">${weak.map(k=>`<span class="key-pill">${esc(labelKey(k.key))}</span>`).join('')}</div>`:''}<div><a href="#practice?track=${weak.length?'weak':'words'}" class="button secondary">${weak.length?'Train weak keys':'Start practising'} <span aria-hidden="true">↗</span></a></div></div>`;
+}
+function chart(runs, title = '60-second tests') {
+  if (runs.length < 2) return `<div class="empty">Your progress starts with a session.<br>Finish two ${esc(title.toLowerCase())} to see your trend here.</div>`;
+  const width=650, height=145, padding=28;
+  const max=Math.max(10,...runs.map(r=>r.wpm))*1.15;
+  const x=i=>padding+i/(runs.length-1)*(width-padding-12), y=v=>height-22-v/max*(height-38);
+  const path=runs.map((r,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(r.wpm).toFixed(1)}`).join(' ');
+  return `<div class="chart-wrap"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(title)}: ${runs.map(r=>fmt(r.wpm)+' WPM').join(', ')}"><text x="0" y="18" fill="var(--faint)" font-size="10">${fmt(max)}</text><text x="8" y="${height-20}" fill="var(--faint)" font-size="10">0</text><line x1="${padding}" y1="${height-22}" x2="${width}" y2="${height-22}" stroke="var(--border)"/><path d="${path}" stroke="var(--accent)" fill="none" stroke-width="2" stroke-linejoin="round"/>${runs.map((r,i)=>`<circle cx="${x(i)}" cy="${y(r.wpm)}" r="3" fill="var(--accent)"><title>${esc(date(r.t))} · ${fmt(r.wpm,1)} WPM · ${fmt(r.acc,1)}% accuracy</title></circle>`).join('')}</svg></div><div class="chart-caption"><span>${date(runs[0].t)} · earlier</span><span>WPM / completed sessions</span><span>${date(runs.at(-1).t)} · latest</span></div>`;
+}
+function renderHome() {
+  const db=store.data, today=db.runs.filter(r=>localDay(r.t)===localDay()), benchmark=benchmarkForRuns(db.runs), tests=benchmark.runs;
+  const total=today.reduce((n,r)=>n+r.chars,0), accuracy=accuracyForRuns(today);
+  $('main').innerHTML=heading('MAKE ROOM FOR A LITTLE PROGRESS', 'Find your flow.', 'A space to practise, play, and become a better typist.', `<span class="date-label">${new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})}</span>`)+
+    `<section class="hero"><div class="hero-content"><div class="eyebrow">SMALL SESSIONS. REAL PROGRESS.</div><h2>Your next personal best<br>starts here.</h2><p>Everyday words, real code, or a race against yourself. Make every keystroke count.</p><div class="button-row"><a class="button" href="#practice">Start practising <span aria-hidden="true">↗</span></a><a class="text-link" href="#test">Take a speed test →</a></div></div><div class="hero-art" aria-hidden="true"><div class="key-art">${['Q','W','E','A','S','D','Z','X','C'].map(k=>`<span>${k}</span>`).join('')}</div></div></section>`+
+    `<div class="section-heading"><h2>A little better, every day</h2><span>Your numbers. No guesswork.</span></div><div class="metric-grid">${metric('Personal benchmark',benchmark.best===null?'—':fmt(benchmark.best),'WPM',`${esc(benchmark.note)}${benchmark.best===null?' <a class="text-link" href="#test">Start a test →</a>':''}`,true)}${metric('Today’s accuracy',accuracy===null?'—':fmt(accuracy,1),'%',today.length?`${today.length} saved session${today.length===1?'':'s'} · weighted by key attempts`:'Type in any mode to start tracking')}${metric('Keys typed today',total.toLocaleString(),'','Correct characters · all modes')}${metric('Practice streak',streak(db.runs),'days',streak(db.runs)?'Keep showing up for yourself':'One session starts a habit',true)}</div>`+
+    `<div class="section-heading"><h2>Choose your rhythm</h2><a class="text-link" href="#practice">All practice modes →</a></div><div class="mode-grid">${card('#practice','Aa','Everyday practice','Build confidence with words, sentences, and real passages.','AT YOUR OWN PACE')}${card('#test','◷','Against the clock','Find your baseline in a 15, 30, 60, or 120-second test.','YOUR NEXT BENCHMARK')}${card('#games','↗','A little friendly rivalry','Clear falling words or race a replay of your personal best.','PRACTICE MEETS PLAY')}</div>`+
+    `<div class="lower-grid"><section class="panel"><div class="section-heading"><h2>Your progress, in motion</h2><span>${esc(benchmark.best===null?'Finish a session to set a benchmark':benchmark.note)}</span></div>${chart(tests.slice(-10),'matching completed sessions')}</section><section class="panel">${recommendation()}</section></div>`;
 }
 
-function buildDrill() {
-  const lines = LENGTHS[sel.length];
-
-  if (sel.track === 'symbols') {
-    const set = SYMBOL_SETS[sel.symbolSet];
-    const text = Array.from({ length: lines }, () => lineOf(set.groups, 6)).join('\n');
-    return { text, name: `Symbols · ${set.label}`, hint: set.hint };
-  }
-
-  if (sel.track === 'keywords') {
-    const words = KEYWORDS[sel.lang];
-    const text = Array.from({ length: lines }, () => lineOf(words, 5)).join('\n');
-    return {
-      text,
-      name: `Keywords · ${LANGUAGES[sel.lang].label}`,
-      hint: 'Whole keywords as single bursts — do not spell them out letter by letter.',
-    };
-  }
-
-  if (sel.track === 'snippets') {
-    const s = SNIPPETS[sel.lang][sel.snippet] || SNIPPETS[sel.lang][0];
-    return {
-      text: s.code,
-      name: `${LANGUAGES[sel.lang].label} · ${s.title}`,
-      hint: 'Auto-indent is handled for you. Newlines are marked ↵ — press Enter.',
-    };
-  }
-
-  if (sel.track === 'weak') {
-    const weak = weakKeys(10);
-    if (weak.length < 4) {
-      const set = SYMBOL_SETS.mixed;
-      return {
-        text: Array.from({ length: lines }, () => lineOf(set.groups, 6)).join('\n'),
-        name: 'Weak keys · warming up',
-        hint: 'Not enough data yet — run a few drills and this becomes a targeted drill.',
-      };
-    }
-    const chars = weak.map((w) => w.display);
-    const groups = [];
-    for (let i = 0; i < 40; i++) {
-      const len = 2 + Math.floor(Math.random() * 3);
-      let g = '';
-      for (let j = 0; j < len; j++) g += pick(chars);
-      groups.push(g);
-    }
-    return {
-      text: Array.from({ length: lines }, () => lineOf(groups, 6)).join('\n'),
-      name: `Weak keys · ${chars.slice(0, 6).join(' ')}`,
-      hint: 'Generated from your own error and latency history. Slow down and get them clean.',
-    };
-  }
-
-  const raw = $('customInput').value.replace(/\t/g, '  ').replace(/\s+$/, '');
-  if (!raw.trim()) {
-    return {
-      text: '// Paste your own code in the box above, then press Tab.',
-      name: 'Your code',
-      hint: 'Paste anything you type often — a config block, a test, a query.',
-    };
-  }
-  return { text: raw, name: 'Your code', hint: 'Practising real code you actually write beats random words.' };
+const trackNames={words:'Words',sentences:'Sentences',paragraphs:'Paragraphs',punctuation:'Punctuation',numbers:'Numbers',symbols:'Symbols',code:'Code',weak:'Weak keys',custom:'Custom'};
+function chips(items, value, group) { return `<div class="chip-group" role="group" aria-label="${group}">${items.map(([v,l])=>`<button class="chip" data-group="${group}" data-value="${v}" aria-pressed="${String(v)===String(value)}">${l}</button>`).join('')}</div>`; }
+function selectField(id,label,items,value) { return `<label class="field">${label}<select id="${id}">${items.map(([v,l])=>`<option value="${v}"${String(value)===String(v)?' selected':''}>${esc(l)}</option>`).join('')}</select></label>`; }
+function renderPractice(mode = 'practice', repeat = null) {
+  const isTest=mode==='test', isGhost=mode==='ghost';
+  if (isGhost) { options.track='paragraphs'; options.strict=false; }
+  const track=isTest?(['words','sentences','numbers','punctuation'].includes(options.track)?options.track:'words'):options.track;
+  if (isTest) options.track=track;
+  const code=track==='code', duration=isTest?options.duration:0;
+  $('main').innerHTML=heading(isGhost?'YOU VS. YESTERDAY’S YOU':isTest?'SET YOUR NEXT BENCHMARK':'GET INTO YOUR RHYTHM',isGhost?'Race your ghost.':isTest?'Make every second count.':'A little practice goes a long way.',isGhost?'Same passage. Your best replay. A new chance to improve.':isTest?'The clock starts on your first keystroke. Accuracy counts.':'Choose your text, settle in, and find a steady pace.')+
+    (isGhost?`<div class="notice">${store.data.ghosts['classic']?'Your ghost replays your fastest completed race, including corrections.':'Your first race sets the ghost. Finish it, then race your own replay.'}</div>`:
+    `<div class="setup-bar">${chips(Object.entries(trackNames).filter(([k])=>!isTest||['words','sentences','numbers','punctuation'].includes(k)),track,'track')}${isTest?chips([[15,'15s'],[30,'30s'],[60,'60s'],[120,'120s'],['custom','Custom']], [15,30,60,120].includes(duration)?duration:'custom','duration'):''}</div>`)+
+    `<div class="settings-row">${isTest?`<label class="field">Duration (10–600 seconds)<input id="durationInput" type="number" min="10" max="600" step="1" value="${duration}"></label>`:''}${!isGhost&&!isTest?selectField('lengthInput','Session length',[['short','Short · 20 words'],['medium','Medium · 40 words'],['long','Long · 80 words']],options.length):''}${code?selectField('langInput','Language',Object.entries(LANGUAGES).map(([k,v])=>[k,v.label]),options.lang)+selectField('codeTrackInput','Code practice',[['snippets','Real code'],['keywords','Keywords']],options.codeTrack)+(options.codeTrack==='snippets'?selectField('snippetInput','Snippet',SNIPPETS[options.lang].map((s,i)=>[i,s.title]),options.snippet):''):''}${track==='symbols'?selectField('symbolInput','Symbol set',Object.entries(SYMBOL_SETS).map(([k,v])=>[k,v.label]),options.symbolSet):''}${!isGhost?`<label class="check"><input id="strictInput" type="checkbox" ${options.strict?'checked':''}> Accuracy mode · block on error</label>`:''}${code?`<label class="check"><input id="indentInput" type="checkbox" ${options.indent?'checked':''}> Auto-indent</label>`:''}<label class="check"><input id="keyboardInput" type="checkbox" ${options.keyboard?'checked':''}> Keyboard hints</label><button class="button subtle push-right" id="focusBtn">Enter focus view</button></div>`+
+    (track==='custom'?`<label class="custom-field">Paste your own text or code <span>(up to 12,000 characters)</span><textarea id="customInput" maxlength="12000" rows="3" placeholder="An email, article, paragraph, or code you want to practise…">${esc(options.custom)}</textarea><button class="button secondary" id="applyCustom">Use this text</button></label>`:'')+
+    (track==='weak'&&!weakKeys(store.data.keys).length?'<div class="notice">Build a baseline first. Your practice becomes targeted after at least six attempts on a key.</div>':'')+
+    `<section class="typing-panel" id="typingPanel" aria-label="Typing session"><div class="typing-top"><span><span class="session-dot"></span><span id="drillName"></span></span><div class="live-metrics"><span><b id="liveWpm">0</b> wpm</span><span><b id="liveAcc">100</b>%</span><span><b id="liveTime">${duration||'0'}</b>${duration?'s left':'s'}</span></div></div>${isGhost?'<div class="race-lanes"><div><div class="race-label"><span>You</span><span id="raceYouLabel">0%</span></div><div class="race-track"><i id="raceYou"></i></div></div><div><div class="race-label"><span>Your ghost</span><span id="raceGhostLabel">Set your first replay</span></div><div class="race-track ghost"><i id="raceGhost"></i></div></div></div>':''}<div class="typing-wrap"><div id="passage" class="passage" aria-hidden="true"></div><textarea id="typingInput" class="typing-input" aria-label="Typing area" aria-describedby="typingHelp" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea><div class="focus-prompt" aria-hidden="true">Click here or use Tab to start <kbd>↵</kbd></div></div><div class="run-progress" aria-hidden="true"><i id="runProgress"></i></div><div class="typing-bottom"><span id="typingHelp">${code?'Type the code shown. Press Enter for ↵.':isGhost?'Complete the passage. Your replay is saved when you finish.':'Type the text above. Backspace to correct. The clock starts when you do.'}</span><div class="button-row"><button class="text-link" id="restartBtn">Restart <kbd>Esc</kbd></button><button class="button secondary" id="newBtn">${isGhost?'Reset race':'New text'} ↻</button><button class="button secondary" id="exitFocus" hidden>Exit focus</button></div></div></section><div id="keyboard" class="keyboard" aria-hidden="true" ${options.keyboard?'':'hidden'}></div><p class="practice-note">No rush. Accuracy first. Speed follows.</p><div id="results"></div>`;
+  const d=repeat|| (isGhost ? { text:store.data.ghosts.classic?.text || PASSAGES[1].text,name:'Ghost Race · Learning to begin' } : makeText(track,options,store.data.keys));
+  if (!d.text) { d.text='Paste your own text above, then choose Use this text.'; d.placeholder=true; }
+  current={...d,mode,track,duration,strict:options.strict,indent:code&&options.indent,id:crypto.randomUUID()};
+  session=new TypingSession(d.text,{strict:options.strict,indent:current.indent,duration});
+  if (duration) while (session.chars.length<1500) session.append(' '+makeText(track,options).text);
+  ghost=isGhost?store.data.ghosts.classic:null; saved=false; painted=-1;
+  $('drillName').textContent=d.name;
+  $('typingInput').setAttribute('aria-label',`Type this passage: ${session.chars.join('')}`);
+  $('typingInput').disabled=Boolean(d.placeholder);
+  paintPassage(true); buildKeyboard($('keyboard'));
+  bindTyping(); bindSetup(mode); paintRun();
+  if (options.focus) setFocus(true);
 }
-
-/* --- engine ------------------------------------------------------------- */
-const codeEl = $('code');
-const wrapEl = codeEl.parentElement;
-let run = null;
-let ticker = null;
-
-function newRun(text, meta) {
-  const chars = [...text];
-  run = {
-    text,
-    meta,
-    chars,
-    spans: [],
-    status: new Array(chars.length).fill(0), // 0 pending, 1 correct, 2 wrong, 3 auto
-    idx: 0,
-    started: 0,
-    lastAt: 0,
-    errors: 0,
-    keystrokes: 0,
-    correct: 0,
-    samples: [],
-    perKey: {},
-    done: false,
-  };
-  render();
-  autoAdvance();
-  paint();
-  $('drillName').textContent = meta.name;
-  $('hint').textContent = meta.hint;
-  $('results').hidden = true;
-  stopTicker();
-  updateMeta();
-}
-
-function render() {
-  const frag = document.createDocumentFragment();
-  run.spans = run.chars.map((c) => {
-    const s = document.createElement('span');
-    s.className = 'ch';
-    if (c === '\n') {
-      s.classList.add('nl');
-      s.textContent = '\n';
-    } else if (c === ' ') {
-      s.classList.add('sp');
-      s.textContent = ' ';
-    } else {
-      s.textContent = c;
-    }
-    frag.appendChild(s);
-    return s;
-  });
-  codeEl.replaceChildren(frag);
-}
-
-/* Skip leading indentation so you type code, not whitespace. */
-function autoAdvance() {
-  if (!opts.indent) return;
-  const atLineStart = () => run.idx === 0 || run.chars[run.idx - 1] === '\n';
-  while (run.idx < run.chars.length && atLineStart()) {
-    let moved = false;
-    while (run.idx < run.chars.length && (run.chars[run.idx] === ' ' || run.chars[run.idx] === '\t')) {
-      run.status[run.idx] = 3;
-      run.idx++;
-      moved = true;
-    }
-    if (!moved) break;
-  }
-}
-
-function paint() {
-  const cls = ['', 'done', 'bad', 'auto'];
-  run.spans.forEach((s, i) => {
-    s.className = 'ch' + (run.chars[i] === '\n' ? ' nl' : run.chars[i] === ' ' ? ' sp' : '');
-    if (run.status[i]) s.classList.add(cls[run.status[i]]);
-    if (i === run.idx) s.classList.add('cur');
-  });
-  const cur = run.spans[run.idx];
-  if (cur) {
-    const top = cur.offsetTop;
-    const h = codeEl.clientHeight;
-    if (top < codeEl.scrollTop || top > codeEl.scrollTop + h - 48) {
-      codeEl.scrollTop = Math.max(0, top - h / 2);
-    }
-  }
-  const pct = (run.idx / run.chars.length) * 100;
-  $('progressBar').style.width = `${clamp(pct, 0, 100)}%`;
-  paintKeyboardHint();
-}
-
-function accuracy() {
-  return run.keystrokes ? (run.keystrokes - run.errors) / run.keystrokes : 1;
-}
-function elapsed() {
-  return run.started ? (performance.now() - run.started) / 1000 : 0;
-}
-function netWpm(secs = elapsed()) {
-  if (!secs) return 0;
-  return (run.correct / 5) / (secs / 60);
-}
-
-function updateMeta() {
-  const secs = elapsed();
-  $('mWpm').textContent = fmt(netWpm(secs));
-  $('mAcc').innerHTML = `${fmt(accuracy() * 100)}<i>%</i>`;
-  $('mTime').innerHTML = `${fmt(secs, 1)}<i>s</i>`;
-  $('mErr').textContent = run.errors;
-}
-
-function startTicker() {
-  if (ticker) return;
-  ticker = setInterval(() => {
-    updateMeta();
-    run.samples.push(netWpm());
-  }, 1000);
-}
-function stopTicker() {
-  clearInterval(ticker);
-  ticker = null;
-}
-
-function recordKey(ch, ok, latency) {
-  const k = KEY_FOR_CHAR.get(ch) || ch;
-  const bucket = (run.perKey[k] ||= { att: 0, err: 0, ms: 0, n: 0, display: ch });
-  bucket.att++;
-  if (ok) {
-    if (latency > 0 && latency < 1200) {
-      bucket.ms += latency;
-      bucket.n++;
-    }
-  } else {
-    bucket.err++;
-    bucket.display = ch;
-  }
-}
-
-function handleKey(e) {
-  if (!run || run.done) return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    newRun(run.text, run.meta);
-    return;
-  }
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    // Mid-run Tab is ignored — losing a run to an indent reflex would be cruel.
-    if (run.started && !run.done) return;
-    const d = buildDrill();
-    newRun(d.text, d);
-    return;
-  }
-  if (e.key === 'Backspace') {
-    e.preventDefault();
-    let i = run.idx - 1;
-    while (i >= 0 && run.status[i] === 3) i--;
-    if (i >= 0) {
-      if (run.status[i] === 1) run.correct--;
-      run.status[i] = 0;
-      run.idx = i;
-      paint();
-    }
-    return;
-  }
-
-  let typed = null;
-  if (e.key === 'Enter') typed = '\n';
-  else if (e.key.length === 1) typed = e.key;
-  if (typed === null) return;
-  e.preventDefault();
-
-  const now = performance.now();
-  if (!run.started) {
-    run.started = now;
-    run.lastAt = now;
-    startTicker();
-  }
-  const latency = now - run.lastAt;
-  run.lastAt = now;
-
-  const expected = run.chars[run.idx];
-
-  // Auto-indent already consumed the leading whitespace. If the habit kicks in
-  // and you press space anyway, swallow it instead of scoring an error.
-  if (opts.indent && typed === ' ' && expected !== ' ' && run.idx > 0 && run.status[run.idx - 1] === 3) {
-    run.lastAt = now;
-    return;
-  }
-
-  const ok = typed === expected;
-  run.keystrokes++;
-  recordKey(expected, ok, latency);
-
-  if (ok) {
-    run.status[run.idx] = 1;
-    run.correct++;
-    run.idx++;
-    autoAdvance();
-  } else {
-    run.errors++;
-    if (opts.strict) {
-      const s = run.spans[run.idx];
-      s.classList.add('shake');
-      setTimeout(() => s.classList.remove('shake'), 190);
-    } else {
-      run.status[run.idx] = 2;
-      run.idx++;
-      autoAdvance();
-    }
-  }
-
-  paint();
-  updateMeta();
-  if (run.idx >= run.chars.length) finish();
-}
-
-/* --- finish + results --------------------------------------------------- */
-function finish() {
-  run.done = true;
-  stopTicker();
-  const secs = elapsed();
-  const net = netWpm(secs);
-  const raw = (run.keystrokes / 5) / (secs / 60);
-  const acc = accuracy() * 100;
-
-  const samples = run.samples.filter((s) => s > 0);
-  let cons = 0;
-  if (samples.length > 1) {
-    const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
-    const sd = Math.sqrt(samples.reduce((a, b) => a + (b - mean) ** 2, 0) / samples.length);
-    cons = clamp((1 - sd / mean) * 100, 0, 100);
-  } else {
-    cons = 100;
-  }
-
-  const db = store.load();
-  const prevBest = db.runs.length ? Math.max(...db.runs.map((r) => r.wpm)) : 0;
-  const prev = db.runs.length ? db.runs[db.runs.length - 1].wpm : null;
-
-  db.runs.push({
-    t: Date.now(),
-    wpm: Math.round(net * 10) / 10,
-    acc: Math.round(acc * 10) / 10,
-    raw: Math.round(raw * 10) / 10,
-    cons: Math.round(cons),
-    errors: run.errors,
-    name: run.meta.name,
-    chars: run.correct,
-  });
-  if (db.runs.length > 200) db.runs = db.runs.slice(-200);
-  db.chars += run.correct;
-  for (const [k, v] of Object.entries(run.perKey)) {
-    const g = (db.keys[k] ||= { att: 0, err: 0, ms: 0, n: 0, display: v.display });
-    g.att += v.att;
-    g.err += v.err;
-    g.ms += v.ms;
-    g.n += v.n;
-    g.display = v.display;
-  }
-  store.save();
-
-  $('rWpm').textContent = fmt(net, 1);
-  $('rAcc').textContent = `${fmt(acc, 1)}%`;
-  $('rRaw').textContent = fmt(raw, 1);
-  $('rCons').textContent = `${fmt(cons)}%`;
-  $('rErr').textContent = run.errors;
-  $('resultsSub').textContent = `${run.meta.name} · ${fmt(secs, 1)}s · ${run.correct} chars`;
-
-  const delta = $('rWpmDelta');
-  delta.className = 'kpi-delta';
-  if (net > prevBest && db.runs.length > 1) {
-    delta.textContent = `new best (was ${fmt(prevBest, 1)})`;
-    delta.classList.add('up');
-  } else if (prev !== null) {
-    const d = net - prev;
-    delta.textContent = `${d >= 0 ? '+' : ''}${fmt(d, 1)} vs last run`;
-    delta.classList.add(d >= 0 ? 'up' : 'down');
-  } else {
-    delta.textContent = 'first run recorded';
-  }
-
-  const entries = Object.entries(run.perKey).map(([k, v]) => ({
-    k,
-    label: keyLabel(k, v.display),
-    avg: v.n ? v.ms / v.n : 0,
-    errRate: v.att ? v.err / v.att : 0,
-    err: v.err,
-    att: v.att,
+function bindSetup(mode) {
+  document.querySelectorAll('[data-group]').forEach(b=>b.addEventListener('click',()=>{
+    if (b.dataset.group==='track') { options.track=b.dataset.value;options.targetKey=''; }
+    else if (b.dataset.value==='custom') { $('durationInput').focus(); $('durationInput').select(); return; }
+    else options.duration=Number(b.dataset.value);
+    stopRun();renderPractice(mode);
   }));
-  const slow = entries.filter((e) => e.avg > 0 && e.att >= 2).sort((a, b) => b.avg - a.avg).slice(0, 5);
-  const miss = entries.filter((e) => e.err > 0).sort((a, b) => b.err - a.err || b.errRate - a.errRate).slice(0, 5);
-  const maxAvg = slow.length ? slow[0].avg : 1;
-
-  $('rSlow').innerHTML = slow.length
-    ? slow
-        .map(
-          (e) =>
-            `<li><code>${esc(e.label)}</code><span class="bar"><i style="width:${fmt(
-              (e.avg / maxAvg) * 100
-            )}%"></i></span><span class="num">${fmt(e.avg)}ms</span></li>`
-        )
-        .join('')
-    : '<li>Not enough samples.</li>';
-  $('rMiss').innerHTML = miss.length
-    ? miss
-        .map(
-          (e) =>
-            `<li><code>${esc(e.label)}</code><span class="bar"><i style="width:${fmt(
-              e.errRate * 100
-            )}%"></i></span><span class="num">${e.err}/${e.att}</span></li>`
-        )
-        .join('')
-    : '<li>Clean run — no misses.</li>';
-
-  $('results').hidden = false;
-  $('results').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (!$('statsPanel').hidden) renderStats();
+  const bindings={lengthInput:'length',langInput:'lang',codeTrackInput:'codeTrack',snippetInput:'snippet',symbolInput:'symbolSet',strictInput:'strict',indentInput:'indent'};
+  for (const [id,prop] of Object.entries(bindings)) $(id)?.addEventListener('change',e=>{ options[prop]=e.target.type==='checkbox'?e.target.checked:prop==='snippet'?Number(e.target.value):e.target.value;if(id==='langInput') options.snippet=0;stopRun();renderPractice(mode); });
+  $('durationInput')?.addEventListener('change',e=>{const n=Number(e.target.value);if(!Number.isInteger(n)||n<10||n>600){e.target.setCustomValidity('Choose a whole number from 10 to 600.');e.target.reportValidity();return;}e.target.setCustomValidity('');options.duration=n;stopRun();renderPractice(mode);});
+  $('keyboardInput').addEventListener('change',e=>{options.keyboard=e.target.checked;$('keyboard').hidden=!options.keyboard;});
+  $('focusBtn').addEventListener('click',()=>setFocus(true));$('exitFocus').addEventListener('click',()=>setFocus(false));
+  $('restartBtn').addEventListener('click',()=>restartCurrent(true));$('newBtn').addEventListener('click',()=>restartCurrent(false));
+  const finish=document.createElement('button');finish.className='button secondary';finish.id='finishBtn';finish.textContent='Finish & save';finish.disabled=true;
+  $('newBtn').before(finish);finish.addEventListener('click',()=>finishRun(false));
+  $('customInput')?.addEventListener('input',e=>options.custom=e.target.value);
+  $('applyCustom')?.addEventListener('click',()=>{if(!options.custom.trim()){notify('Paste some text first.');$('customInput').focus();return;}stopRun();renderPractice(mode);$('typingInput').focus();});
 }
-
-function esc(s) {
-  return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
-}
-function keyLabel(k, display) {
-  if (k === ' ') return 'space';
-  if (k === '\n') return '↵';
-  return display && display !== ' ' ? display : k;
-}
-
-/* --- keyboard ----------------------------------------------------------- */
-function buildKeyboard(el, heat) {
-  el.replaceChildren();
-  KEY_ROWS.forEach((row) => {
-    const r = document.createElement('div');
-    r.className = 'krow';
-    row.forEach(([base, shifted]) => {
-      const k = document.createElement('div');
-      k.className = 'key';
-      k.dataset.key = base;
-      k.innerHTML = `<span class="up">${esc(shifted)}</span><span>${esc(base)}</span>`;
-      r.appendChild(k);
-    });
-    el.appendChild(r);
-  });
-  const last = document.createElement('div');
-  last.className = 'krow';
-  const space = document.createElement('div');
-  space.className = 'key wide';
-  space.dataset.key = ' ';
-  space.textContent = 'space';
-  const ret = document.createElement('div');
-  ret.className = 'key wide';
-  ret.dataset.key = '\n';
-  ret.textContent = 'enter ↵';
-  last.append(space, ret);
-  el.appendChild(last);
-  if (heat) el.classList.add('keyboard--heat');
-}
-
-function paintKeyboardHint() {
-  if (!opts.keyboard || !run) return;
-  const kb = $('keyboard');
-  const next = run.chars[run.idx];
-  const target = next === '\n' ? '\n' : KEY_FOR_CHAR.get(next);
-  kb.querySelectorAll('.key').forEach((k) => {
-    k.classList.toggle('next', k.dataset.key === target);
-  });
-}
-
-/* --- stats panel -------------------------------------------------------- */
-function weakKeys(n) {
-  const db = store.load();
-  const rows = Object.entries(db.keys)
-    .filter(([k, v]) => v.att >= 6 && k !== ' ' && k !== '\n')
-    .map(([k, v]) => {
-      const errRate = v.err / v.att;
-      const avg = v.n ? v.ms / v.n : 0;
-      return { k, display: v.display || k, errRate, avg, att: v.att, score: errRate * 320 + avg / 6 };
-    });
-  return rows.sort((a, b) => b.score - a.score).slice(0, n);
-}
-
-function renderStats() {
-  const db = store.load();
-  const runs = db.runs;
-  $('statsEmpty').hidden = runs.length > 0;
-
-  const last10 = runs.slice(-10);
-  $('sRuns').textContent = runs.length;
-  $('sBest').textContent = runs.length ? fmt(Math.max(...runs.map((r) => r.wpm)), 1) : '0';
-  $('sAvg').textContent = last10.length
-    ? fmt(last10.reduce((a, r) => a + r.wpm, 0) / last10.length, 1)
-    : '0';
-  $('sAccAvg').textContent = last10.length
-    ? `${fmt(last10.reduce((a, r) => a + r.acc, 0) / last10.length, 1)}%`
-    : '0%';
-  $('sChars').textContent = db.chars.toLocaleString('en-US');
-
-  drawChart(runs.slice(-30));
-
-  // heat map
-  const heat = $('heatmap');
-  buildKeyboard(heat, true);
-  const vals = Object.values(db.keys).filter((v) => v.n >= 3);
-  const median =
-    vals.length
-      ? vals.map((v) => v.ms / v.n).sort((a, b) => a - b)[Math.floor(vals.length / 2)]
-      : 0;
-  let noted = 0;
-  heat.querySelectorAll('.key').forEach((el) => {
-    const v = db.keys[el.dataset.key];
-    if (!v || v.att < 6) return;
-    noted++;
-    let cls;
-    if (sel.heatMetric === 'errors') {
-      const r = v.err / v.att;
-      cls = r <= 0.02 ? 'heat-good' : r <= 0.07 ? 'heat-mid' : 'heat-bad';
-    } else {
-      const avg = v.n ? v.ms / v.n : 0;
-      if (!avg || !median) return;
-      cls = avg <= median * 1.15 ? 'heat-good' : avg <= median * 1.6 ? 'heat-mid' : 'heat-bad';
-    }
-    el.classList.add(cls);
-    el.title =
-      `${keyLabel(el.dataset.key, v.display)} · ${v.att} presses · ` +
-      `${fmt((v.err / v.att) * 100, 1)}% miss · ${v.n ? fmt(v.ms / v.n) : '–'}ms`;
-  });
-  $('heatNote').textContent = noted
-    ? `${noted} keys with enough data${sel.heatMetric === 'speed' && median ? ` · median ${fmt(median)}ms` : ''}`
-    : 'needs ~6 presses per key';
-
-  const weak = weakKeys(8);
-  $('sWeak').innerHTML = weak.length
-    ? weak
-        .map(
-          (w) =>
-            `<li><code>${esc(keyLabel(w.k, w.display))}</code><span class="bar"><i style="width:${fmt(
-              clamp((w.score / (weak[0].score || 1)) * 100, 6, 100)
-            )}%"></i></span><span class="num">${fmt(w.errRate * 100, 1)}% · ${
-              w.avg ? fmt(w.avg) + 'ms' : '–'
-            }</span></li>`
-        )
-        .join('')
-    : '<li>Run a few drills to populate this.</li>';
-}
-
-function drawChart(runs) {
-  const host = $('chart');
-  if (runs.length < 2) {
-    host.innerHTML =
-      '<p class="empty">At least two runs needed to plot a trend.</p>';
-    return;
+function setFocus(active) {options.focus=active;document.body.classList.toggle('focus-mode',active);if($('exitFocus'))$('exitFocus').hidden=!active;if(active)$('typingInput')?.focus();}
+function restartCurrent(repeat) {const meta=repeat?{text:current.text,name:current.name,placeholder:current.placeholder}:null;const mode=current.mode;stopRun();renderPractice(mode,meta);$('typingInput')?.focus();}
+function consume(text) {
+  if (!session||session.done||current.placeholder) return;
+  for (const ch of [...text]) {
+    if (session.duration&&session.chars.length-session.index<150) {session.append(' '+makeText(current.track,options).text);paintPassage(true);}
+    session.type(ch,performance.now());if(session.done)break;
   }
-  const W = 800;
-  const H = 150;
-  const pad = { t: 10, r: 6, b: 10, l: 6 };
-  const ws = runs.map((r) => r.wpm);
-  const min = Math.max(0, Math.floor(Math.min(...ws) - 4));
-  const max = Math.ceil(Math.max(...ws) + 4);
-  const x = (i) => pad.l + (i / (runs.length - 1)) * (W - pad.l - pad.r);
-  const y = (v) => pad.t + (1 - (v - min) / (max - min || 1)) * (H - pad.t - pad.b);
-  const line = runs.map((r, i) => `${i ? 'L' : 'M'}${fmt(x(i), 1)},${fmt(y(r.wpm), 1)}`).join(' ');
-  const area = `${line} L${fmt(x(runs.length - 1), 1)},${H - pad.b} L${fmt(x(0), 1)},${H - pad.b} Z`;
-  const avg = ws.reduce((a, b) => a + b, 0) / ws.length;
-  const dots = runs
-    .map(
-      (r, i) =>
-        `<circle cx="${fmt(x(i), 1)}" cy="${fmt(y(r.wpm), 1)}" r="${
-          i === runs.length - 1 ? 4 : 2.4
-        }" fill="var(--color-primary)"><title>${esc(r.name)} — ${r.wpm} wpm, ${r.acc}% acc</title></circle>`
-    )
-    .join('');
-
-  host.innerHTML = `<div class="chart-plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
-      aria-label="Words per minute across your last ${runs.length} runs, averaging ${fmt(avg, 1)}">
-    <line x1="${pad.l}" x2="${W - pad.r}" y1="${fmt(y(avg), 1)}" y2="${fmt(y(avg), 1)}"
-      stroke="var(--color-text-faint)" stroke-dasharray="3 4" stroke-width="1"/>
-    <path d="${area}" fill="var(--color-primary)" opacity=".10"/>
-    <path d="${line}" fill="none" stroke="var(--color-primary)" stroke-width="2"
-      stroke-linejoin="round" stroke-linecap="round"/>
-    ${dots}
-  </svg></div>
-  <div class="chart-caption">
-    <span>oldest · <b>${fmt(runs[0].wpm, 1)} wpm</b></span>
-    <span>average <b>${fmt(avg, 1)}</b> · range ${min}–${max}</span>
-    <span>latest · <b>${fmt(runs[runs.length - 1].wpm, 1)} wpm</b></span>
-  </div>`;
+  ensureTick();paintPassage();paintRun();if(session.done)finishRun();
+}
+function bindTyping() {
+  const input=$('typingInput');let composing=false,compositionEnd=0;
+  input.addEventListener('paste',e=>{e.preventDefault();notify('Pasting is available in Custom text. Type the passage to record a session.');});
+  input.addEventListener('drop',e=>e.preventDefault());
+  input.addEventListener('compositionstart',()=>composing=true);
+  input.addEventListener('compositionend',e=>{composing=false;compositionEnd=performance.now();consume(e.data);input.value='';});
+  input.addEventListener('input',e=>{if(composing||e.isComposing)return;if(e.inputType==='insertFromPaste'||e.inputType==='insertFromDrop'){input.value='';return;}if(e.inputType?.includes('Composition')&&performance.now()-compositionEnd<100){input.value='';return;}if(e.inputType==='deleteContentBackward'){session.backspace(performance.now());paintPassage();paintRun();}else consume(e.data??input.value);input.value='';});
+  input.addEventListener('keydown',e=>{
+    if(e.isComposing||e.ctrlKey||e.metaKey||e.altKey)return;
+    if(e.key==='Escape'){e.preventDefault();if(options.focus)setFocus(false);else restartCurrent(true);}
+    if(e.key==='Backspace'){e.preventDefault();session.backspace(performance.now());paintPassage();paintRun();if(session.done)finishRun();}
+    if(e.key==='Enter'){e.preventDefault();consume('\n');}
+    if(e.key.length===1&&!composing){e.preventDefault();consume(e.key);}
+  });
+}
+function paintPassage(force=false) {
+  if(!session||!$('passage'))return;
+  if(force||spans.length!==session.chars.length){const fragment=document.createDocumentFragment();spans=session.chars.map(ch=>{const el=document.createElement('span');el.textContent=ch==='\n'?'↵\n':ch;fragment.append(el);return el;});$('passage').replaceChildren(fragment);painted=-1;}
+  const start=painted<0?0:Math.max(0,Math.min(painted,session.index)-2),end=painted<0?spans.length:Math.min(spans.length,Math.max(painted,session.index)+3);
+  for(let i=start;i<end;i++)spans[i].className= i===session.index?'current'+(session.strict&&session.lastWrong?' current-wrong':''):session.status[i]===1?'correct':session.status[i]===2?'wrong':session.status[i]===3?'auto':'';
+  const cursor=spans[session.index];
+  if(cursor&&painted!==session.index){const host=$('passage');const y=cursor.offsetTop-host.offsetTop;if(y<host.scrollTop||y>host.scrollTop+host.clientHeight-55)host.scrollTop=Math.max(0,y-75);}
+  painted=session.index;
+  const target=KEY_FOR_CHAR.get(session.chars[session.index])||session.chars[session.index];
+  $('keyboard')?.querySelectorAll('[data-key]').forEach(k=>k.classList.toggle('next',k.dataset.key===target));
+}
+function paintRun() {
+  if(!session||!$('liveWpm'))return;
+  const now=performance.now(),m=session.metrics(now);
+  $('liveWpm').textContent=fmt(m.wpm);$('liveAcc').textContent=fmt(m.acc);
+  if($('finishBtn'))$('finishBtn').disabled=session.attempts===0||session.done;
+  $('liveTime').textContent=session.duration?Math.max(0,Math.ceil(session.duration-m.seconds)):fmt(m.seconds);
+  $('runProgress').style.width=`${clamp(session.duration?m.seconds/session.duration*100:session.index/session.chars.length*100,0,100)}%`;
+  if(current.mode==='ghost'){
+    const you=session.index/session.chars.length*100,other=ghost?ghostPosition(ghost.events,m.seconds*1000)/session.chars.length*100:0;
+    $('raceYou').style.width=you+'%';$('raceYouLabel').textContent=fmt(you)+'%';$('raceGhost').style.width=other+'%';
+    $('raceGhostLabel').textContent=ghost?fmt(other)+'% · '+fmt(ghost.wpm)+' WPM best':'First race · setting your ghost';
+  }
+}
+function sessionMeta(completed) {return {name:current.name,mode:current.mode,track:current.track,duration:current.duration,strict:current.strict,indent:current.indent,id:current.id,completed};}
+function checkpoint() {
+  if(!session||saved||session.attempts===0||current?.placeholder)return;
+  store.record(session,sessionMeta(false),performance.now());session.checkpointAt=performance.now();updateChrome();
+}
+function ensureTick(){if(frame!==null)return;function tick(){frame=null;if(!session||session.done)return;if(invaders){tickInvaders(performance.now());}else{if(session.expired(performance.now()))session.finish(performance.now());paintRun();if(session.done)finishRun();}if(session&&!session.done){if(performance.now()-(session.checkpointAt||0)>5000)checkpoint();frame=requestAnimationFrame(tick);}}frame=requestAnimationFrame(tick);}
+function stopRun(){checkpoint();if(frame!==null)cancelAnimationFrame(frame);frame=null;if(invaders)invaders=null;session=null;spans=[];saved=false;}
+function finishRun(completed = true) {
+  if(saved||!session||session.started===null||session.attempts===0)return;
+  saved=true;if(frame!==null)cancelAnimationFrame(frame);frame=null;
+  session.finish(performance.now());const old=store.data.runs.filter(r=>r.completed!==false&&r.id!==current.id&&comparable(r,current));const best=old.length?Math.max(...old.map(r=>r.wpm)):null;
+  const run=store.record(session,sessionMeta(completed),performance.now());
+  let ghostNote='';
+  if(current.mode==='ghost'&&completed){
+    const oldGhost=store.data.ghosts.classic;
+    if(!oldGhost||run.wpm>oldGhost.wpm){store.data.ghosts.classic={text:current.text,wpm:run.wpm,events:session.events.slice(0,4000)};store.save();ghostNote=oldGhost?'You beat your ghost. This run is your new replay.':'Your ghost is ready. Race this replay next time.';}
+    else ghostNote='Your best ghost is waiting for another race.';
+  }
+  if(!completed)ghostNote='Progress saved. Finish the full passage or timer to set a personal benchmark or ghost replay.';
+  if(options.focus)setFocus(false);$('typingInput')?.setAttribute('disabled','');$('invaderInput')?.setAttribute('disabled','');$('finishBtn')?.setAttribute('disabled','');
+  const misses=Object.entries(session.keys).filter(([,v])=>v.err>0).sort((a,b)=>b[1].err-a[1].err).slice(0,4);
+  $('results').innerHTML=`<section class="result" aria-label="Session results"><div class="result-head"><div><div class="eyebrow">${current.mode==='invaders'?`${invaders?.score||0} WORDS CLEARED`:ghostNote?'YOU VS. YOU':'ONE SESSION BETTER'}</div><h2>${run.acc>=98?'That’s a steady rhythm.':'Good practice. Keep going.'}</h2></div><span class="xp-badge">+${run.xp} XP</span></div><div class="metric-grid">${metric('Typing speed',fmt(run.wpm),'WPM',best===null?'Your first run in this mode':run.wpm>best?`New best · +${fmt(run.wpm-best,1)} WPM`:`Best in this mode · ${fmt(best)} WPM`,true)}${metric('Accuracy',fmt(run.acc,1),'%',`${run.errors} incorrect attempts`)}${metric('Consistency',run.cons===null?'—':fmt(run.cons),'%',run.cons===null?'Needs at least 5 measured intervals':'Based on correct-key timing')}${metric('Time practised',fmt(run.seconds,1),'s',`${run.chars} correct characters`)}</div><p class="result-info">${esc(ghostNote|| (misses.length?`Next focus: ${misses.map(([k,v])=>`${labelKey(k)} (${v.err} misses)`).join(', ')}.`:'A clean session. Try a longer passage or a new mode.'))}</p><p class="result-info">Raw speed ${fmt(run.raw)} WPM · ${run.backspaces} corrections · ${run.strict?'Accuracy mode':'Standard mode'}. Errors remain in accuracy after correction.</p><div class="button-row"><button class="button" id="resultRepeat">${current.mode==='ghost'?'Race again':current.mode==='invaders'?'Play again':'Try again'} ↗</button><a href="#practice?track=weak" class="button secondary">Train weak keys</a><a href="#stats" class="text-link">Explore your skill map →</a></div></section>`;
+  $('resultRepeat').addEventListener('click',()=>{if(current.mode==='invaders'){stopRun();renderInvaders();}else restartCurrent(true);});
+  updateChrome();notify(`Session complete. ${fmt(run.wpm)} words per minute, ${fmt(run.acc)} percent accuracy. ${run.xp} XP earned.`);
+  $('results').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'nearest'});
 }
 
-/* --- setup UI ----------------------------------------------------------- */
-function chipGroup(host, items, current, onPick) {
+function buildKeyboard(host,interactive=false){
   host.replaceChildren();
-  items.forEach(({ value, label }) => {
-    const b = document.createElement('button');
-    b.className = 'chip';
-    b.setAttribute('role', 'tab');
-    b.textContent = label;
-    b.setAttribute('aria-selected', String(value === current));
-    b.addEventListener('click', () => onPick(value));
-    host.appendChild(b);
+  const rows=[...KEY_ROWS.map(row=>row.map(([key])=>key)),[' ','\n']];
+  for(const row of rows){const line=document.createElement('div');line.className='key-row';for(const key of row){const el=document.createElement(interactive?'button':'span');el.className='key'+(key===' '||key==='\n'?' wide':'');el.dataset.key=key;el.textContent=labelKey(key);if(interactive){el.type='button';el.setAttribute('aria-label',`Inspect ${labelKey(key)} key`);const v=store.data.keys[key];if(v&&v.att>=6)el.classList.add(v.err/v.att<=.02?'heat-good':v.err/v.att<=.07?'heat-mid':'heat-bad');el.addEventListener('click',()=>renderKeyDetail(key));}line.append(el);}host.append(line);}
+}
+function renderKeyDetail(key){
+  const v=store.data.keys[key],most=v?Object.entries(v.mistakes||{}).sort((a,b)=>b[1]-a[1])[0]:null;
+  $('keyDetail').innerHTML=`<h3>${esc(labelKey(key))} · ${v?`${v.att} attempts`:'No data yet'}</h3><p>${v?`${fmt((1-v.err/(v.att||1))*100,1)}% accuracy · ${v.n?fmt(v.ms/v.n)+'ms average interval':'Timing not measured yet'}. ${most?'Most common mistake: '+esc(labelKey(most[0]))+'.':''}`:'Finish a session with this key to start learning about it.'}</p>${key.trim()?`<a class="button secondary" href="#practice?track=weak&key=${encodeURIComponent(key)}">Practise ${esc(labelKey(key))} →</a>`:''}`;
+}
+function renderGames(){
+  $('main').innerHTML=heading('A LITTLE PLAY GOES A LONG WAY','Welcome to the arcade.','Same skills. A different kind of challenge.')+`<div class="games-grid"><article class="game-card"><div class="game-art" aria-hidden="true"><div class="invader-art"><span>rhythm</span><span>keyboard</span><span>focus</span><span>practice</span></div></div><div class="game-card-body"><div class="eyebrow">QUICK THINKING · CLEAN TYPING</div><h2>Type Invaders</h2><p>Words are falling. Type the highlighted word before it reaches the ground. Words clear automatically.</p><a class="button" href="#games?play=invaders">Defend your keyboard ↗</a></div></article><article class="game-card"><div class="game-art" aria-hidden="true"><div class="race-art"><div></div><div></div></div></div><div class="game-card-body"><div class="eyebrow">PERSONAL BEST · PERSONAL RIVAL</div><h2>Ghost Race</h2><p>Your strongest opponent is your previous self. Finish a passage to set your ghost, then race its actual replay.</p><a class="button" href="#games?play=ghost">${store.data.ghosts.classic?'Race your ghost':'Set your first ghost'} ↗</a></div></article></div><p class="game-note">Every completed game trains the same skill map as your practice sessions.</p><section class="panel" style="margin-top:28px">${recommendation()}</section>`;
+}
+function renderInvaders(){
+  $('main').innerHTML=heading('60 SECONDS · 10 SHIELDS','Type Invaders.','Type the highlighted word to clear it. Wrong letters and escaped words cost a shield.',`<a href="#games" class="button secondary">← Arcade</a>`)+`<section class="typing-panel"><div class="typing-top"><span><span class="session-dot"></span><span id="invaderStatus">Ready to defend</span></span><div class="live-metrics"><span><b id="gameScore">0</b> cleared</span><span><b id="gameHealth">10</b> shields</span><span><b id="gameTime">60</b>s left</span></div></div><div id="arena" class="arena" aria-label="Falling word arena"><div class="arena-start" id="arenaStart"><h2>Keep the words from landing.</h2><p>Type the word highlighted in green. It clears as soon as you finish it. You have 10 shields and 60 seconds.</p><button class="button" id="startInvaders">Start defending ↗</button></div></div><div class="game-target">Current target <strong id="targetWord">Start the game to begin</strong><span>Words clear automatically · Space is optional</span></div><div class="invader-input-row"><label for="invaderInput" class="sr-only">Type the highlighted word</label><input id="invaderInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="The highlighted word goes here…" disabled><button class="button secondary" id="gameRestart">Restart</button></div></section><p class="practice-note">Wrong letter: −1 shield · Escaped word: −2 shields · Every 5 cleared words raises the pace.</p><div id="results"></div>`;
+  $('startInvaders').addEventListener('click',startInvaders);$('gameRestart').addEventListener('click',()=>{stopRun();renderInvaders();});
+}
+function startInvaders(){
+  session=new TypingSession('',{strict:true,duration:60});session.started=performance.now();current={mode:'invaders',name:'Type Invaders',track:'words',duration:60,strict:true,indent:false,id:crypto.randomUUID()};saved=false;
+  invaders={enemies:[],score:0,health:10,lastSpawn:performance.now(),lastFrame:performance.now(),id:0};
+  $('arenaStart').remove();$('invaderInput').disabled=false;$('invaderInput').focus();spawnEnemy();
+  const input=$('invaderInput');
+  input.addEventListener('paste',e=>e.preventDefault());input.addEventListener('drop',e=>e.preventDefault());
+  input.addEventListener('input',e=>{if(e.isComposing)return;if(e.inputType==='insertFromPaste'||e.inputType==='insertFromDrop'){paintEnemies();return;}if(e.inputType==='deleteContentBackward'){undoGameKey();return;}typeInvaderText(e.data||'');});
+  input.addEventListener('keydown',e=>{
+    if(e.isComposing||e.ctrlKey||e.metaKey||e.altKey)return;
+    if(e.key==='Backspace'){e.preventDefault();undoGameKey();}
+    else if(e.key==='Escape'){e.preventDefault();stopRun();renderInvaders();}
+    else if(e.key==='Enter'){e.preventDefault();}
+    else if(e.key.length===1){e.preventDefault();typeInvaderText(e.key);}
   });
+  ensureTick();
 }
-
-function syncFields() {
-  document.querySelectorAll('[data-when]').forEach((el) => {
-    el.hidden = !el.dataset.when.split(' ').includes(sel.track);
-  });
-  document.querySelectorAll('#trackChips .chip').forEach((c) =>
-    c.setAttribute('aria-selected', String(c.dataset.track === sel.track))
-  );
-  document.querySelectorAll('#lengthChips .chip').forEach((c) =>
-    c.setAttribute('aria-selected', String(c.dataset.length === sel.length))
-  );
-  document.querySelectorAll('#heatMetric .chip').forEach((c) =>
-    c.setAttribute('aria-selected', String(c.dataset.metric === sel.heatMetric))
-  );
-
-  chipGroup(
-    $('symbolChips'),
-    Object.entries(SYMBOL_SETS).map(([value, v]) => ({ value, label: v.label })),
-    sel.symbolSet,
-    (v) => {
-      sel.symbolSet = v;
-      syncFields();
-      restart();
-    }
-  );
-  chipGroup(
-    $('langChips'),
-    Object.entries(LANGUAGES).map(([value, v]) => ({ value, label: v.label })),
-    sel.lang,
-    (v) => {
-      sel.lang = v;
-      sel.snippet = 0;
-      syncFields();
-      restart();
-    }
-  );
-  chipGroup(
-    $('snippetChips'),
-    SNIPPETS[sel.lang].map((s, i) => ({ value: i, label: s.title })),
-    sel.snippet,
-    (v) => {
-      sel.snippet = v;
-      syncFields();
-      restart();
-    }
-  );
+function spawnEnemy(){
+  if(!invaders)return;const word=pick(WORDS.filter(w=>w.length>=3&&w.length<=Math.min(10,5+Math.floor(invaders.score/5))));
+  const start=session.chars.length;session.append(word+' ');const el=document.createElement('div');el.className='enemy';el.textContent=word;$('arena').append(el);
+  // Three lanes keep new words apart on narrow screens.
+  const lane=invaders.id++%3,arena=$('arena');const x=clamp(lane*(arena.clientWidth/3)+12,6,Math.max(6,arena.clientWidth-el.offsetWidth-8));
+  const enemy={word,start,end:session.chars.length,y:-40,x,el};invaders.enemies.push(enemy);paintEnemies();
 }
-
-function restart() {
-  const d = buildDrill();
-  newRun(d.text, d);
+function typeInvaderText(text){
+  if(!invaders||!session||session.done)return;
+  for(const ch of [...text]){
+    if(/\s/.test(ch))continue; // Space/Enter between words are optional, never a penalty.
+    if(session.expired(performance.now())){session.finish(performance.now());break;}
+    const ok=session.type(ch,performance.now());
+    if(!ok){invaders.health--; $('invaderInput').classList.add('bad');}else $('invaderInput').classList.remove('bad');
+    const target=invaders.enemies[0];
+    if(target&&session.index>=target.end-1){
+      session.status[session.index++]=3; // separator is automatic, not a scored keystroke
+      target.el.remove();invaders.enemies.shift();invaders.score++;
+      if(!invaders.enemies.length)spawnEnemy();
+    }
+    if(invaders.health<=0){session.finish(performance.now());break;}
+  }
+  paintEnemies();paintGameCounters();if(session.done)endInvaders();
 }
+function undoGameKey(){const target=invaders?.enemies[0];if(target&&session.index>target.start){session.backspace(performance.now());paintEnemies();}}
+function paintGameCounters(){if(!invaders)return;$('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('gameTime').textContent=Math.max(0,Math.ceil(60-session.elapsed(performance.now())));}
+function paintEnemies(){
+  if(!invaders)return;
+  for(const enemy of invaders.enemies){enemy.el.classList.toggle('target',enemy===invaders.enemies[0]);const progress=clamp(session.index-enemy.start,0,enemy.word.length);enemy.el.innerHTML=`<b>${esc(enemy.word.slice(0,progress))}</b>${esc(enemy.word.slice(progress))}`;}
+  const target=invaders.enemies[0],input=$('invaderInput');
+  input.setAttribute('aria-label',target?`Type ${target.word}`:'Wait for the next word');
+  input.value=target?target.word.slice(0,clamp(session.index-target.start,0,target.word.length)):'';
+  input.placeholder=target?`Type: ${target.word}`:'Waiting for the next word…';
+  if($('targetWord'))$('targetWord').textContent=target?.word||'…';
+}
+function tickInvaders(now){
+  if(!invaders)return;const delta=(now-invaders.lastFrame)/1000;invaders.lastFrame=now;
+  if(session.expired(now)){session.finish(now);endInvaders();return;}
+  if(now-invaders.lastSpawn>Math.max(1100,3100-invaders.score*45)){spawnEnemy();invaders.lastSpawn=now;}
+  for(const enemy of [...invaders.enemies]){enemy.y+=delta*(20+Math.floor(invaders.score/5)*5);enemy.el.style.transform=`translate(${enemy.x}px,${enemy.y}px)`;
+    if(enemy.y>$('arena').clientHeight-enemy.el.offsetHeight){invaders.health-=2;enemy.el.remove();invaders.enemies=invaders.enemies.filter(e=>e!==enemy);while(session.index<enemy.end){session.status[session.index++]=3;}paintEnemies();}}
+  if(invaders.health>0&&!invaders.enemies.length){spawnEnemy();invaders.lastSpawn=now;}
+  $('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('gameTime').textContent=Math.max(0,Math.ceil(60-session.elapsed(now)));$('invaderStatus').textContent=`Wave ${1+Math.floor(invaders.score/5)} · keep your rhythm`;
+  if(invaders.health<=0)session.finish(now);if(session.done)endInvaders();
+}
+function endInvaders(){if(!invaders)return;$('gameScore').textContent=invaders.score;$('gameHealth').textContent=Math.max(0,invaders.health);$('invaderStatus').textContent=invaders.health<=0?'Shields down · try another run':'Time’s up · well defended';$('invaderInput').disabled=true;if(session.attempts===0){session.attempts=0;$('results').innerHTML='<div class="notice" style="margin-top:20px">No keystrokes recorded. Choose Restart to play again. No progress was saved.</div>';return;}finishRun();}
 
-/* --- wiring ------------------------------------------------------------- */
-document.querySelectorAll('#trackChips .chip').forEach((c) =>
-  c.addEventListener('click', () => {
-    sel.track = c.dataset.track;
-    syncFields();
-    restart();
-    if (sel.track === 'custom') $('customInput').focus();
-    else codeEl.focus();
-  })
-);
-document.querySelectorAll('#lengthChips .chip').forEach((c) =>
-  c.addEventListener('click', () => {
-    sel.length = c.dataset.length;
-    syncFields();
-    restart();
-  })
-);
-document.querySelectorAll('#heatMetric .chip').forEach((c) =>
-  c.addEventListener('click', () => {
-    sel.heatMetric = c.dataset.metric;
-    syncFields();
-    renderStats();
-  })
-);
-
-$('optStrict').addEventListener('change', (e) => (opts.strict = e.target.checked));
-$('optIndent').addEventListener('change', (e) => {
-  opts.indent = e.target.checked;
-  restart();
+function renderStats(){
+  const db=store.data,filter=params.get('filter')||'all';
+  const runs=db.runs.filter(r=>filter==='all'||filter==='practice'&&r.mode==='practice'||filter==='games'&&['ghost','invaders'].includes(r.mode)||filter==='test60'&&r.mode==='test'&&r.duration===60&&!r.strict);
+  const recent=runs.slice(-10),weak=weakKeys(db.keys,8),pairs=Object.entries(db.pairs).filter(([,v])=>v.att>=3&&v.err>0).sort((a,b)=>b[1].err/b[1].att-a[1].err/a[1].att).slice(0,5);
+  $('main').innerHTML=heading('MORE THAN A NUMBER','Meet your typing skill map.','Your speed, habits, and opportunities to improve. Built from real sessions.',selectField('statsFilter','Session history',[['test60','Standard 60s tests'],['practice','Practice'],['games','Games'],['all','All sessions']],filter))+
+    `<div class="metric-grid">${metric('Saved sessions',runs.length,'',filter==='all'?'Last 1,000 sessions retained':'In the selected history')}${metric('Average speed',recent.length?fmt(average(recent.map(r=>r.wpm))):'—','WPM','Last 10 · selected history',true)}${metric('Average accuracy',recent.length?fmt(average(recent.map(r=>r.acc)),1):'—','%','Last 10 · selected history')}${metric('Lifetime characters',db.chars.toLocaleString(),'','Correct characters · all modes')}</div>`+
+    (filter==='all'||filter==='games'||filter==='practice'?'<div class="notice">This view includes different session types. Use standard 60-second tests for a comparable speed benchmark.</div>':'')+
+    `<div class="split"><section class="panel"><div class="section-heading"><h2>Your keyboard, decoded</h2><span>All modes · US QWERTY</span></div><p style="font-size:12px">Select a key for accuracy, timing, and a targeted drill.</p><div class="keyboard" id="skillKeyboard"></div><p class="keyboard-caption">Neutral: fewer than 6 attempts · Green: ≤2% misses · Amber: ≤7% · Red: &gt;7%</p><div id="keyDetail" class="skill-detail"><h3>Every key has a story.</h3><p>Select any key to explore it.</p></div></section><section class="panel"><div class="section-heading"><h2>Your next focus</h2><span>All modes</span></div><ul class="stat-list">${weak.length?weak.map(w=>`<li><code>${esc(labelKey(w.key))}</code><span class="muted">${fmt(w.rate*100,1)}% misses · ${w.latency?fmt(w.latency)+'ms':'no timing'}</span></li>`).join(''):'<li class="empty">Complete a few sessions to find your problem keys.</li>'}</ul><h3 style="margin-top:22px">Problem combinations</h3><ul class="stat-list">${pairs.length?pairs.map(([p,v])=>`<li><code>${p}</code><span class="muted">${v.err} misses / ${v.att} attempts</span></li>`).join(''):'<li class="empty">Repeated letter-pair mistakes will appear here.</li>'}</ul><a class="text-link" href="#practice?track=weak">Build a targeted session →</a></section></div>`+
+    `<section class="panel" style="margin-top:22px"><div class="section-heading"><h2>Your pace over time</h2><span>Last 20 · selected history</span></div>${chart(runs.slice(-20),'sessions in this view')}</section><section class="panel" style="margin-top:22px"><div class="section-heading"><h2>Session history</h2><span>Latest 30</span></div>${runs.length?`<div class="table-wrap"><table><thead><tr><th>When</th><th>Session</th><th>WPM</th><th>Accuracy</th><th>Consistency</th></tr></thead><tbody>${runs.slice(-30).reverse().map(r=>`<tr><td>${date(r.t)}</td><td>${esc(r.name)} <span class="status-pill">${esc(r.mode)}${r.completed===false?' · partial':''}</span></td><td>${fmt(r.wpm,1)}</td><td>${fmt(r.acc,1)}%</td><td>${r.cons===null?'—':fmt(r.cons)+'%'}</td></tr>`).join('')}</tbody></table></div>`:'<p class="empty">No completed sessions in this view yet. Your next session will show up here.</p>'}</section>`;
+  buildKeyboard($('skillKeyboard'),true);$('statsFilter').addEventListener('change',e=>location.hash=`stats?filter=${e.target.value}`);
+}
+function renderProfile(){
+  const db=store.data,level=Math.floor(db.xp/250)+1;
+  const achievements=[['↗','First steps','Complete your first session.',db.runs.length>0],['◎','Precision','Finish 100+ characters at 98% accuracy.',db.runs.some(r=>r.chars>=100&&r.acc>=98)],['◷','Finding flow','Reach 60 WPM in a standard 60s test.',db.runs.some(r=>r.mode==='test'&&r.duration===60&&!r.strict&&r.wpm>=60)],['♧','Player one','Complete a game in the arcade.',db.runs.some(r=>['ghost','invaders'].includes(r.mode))]];
+  const themes=[['void','Void',['#101312','#2a332d','#c0e88d']],['paper','Paper',['#f6f5ef','#dcded2','#487032']],['ocean','Ocean',['#0c1720','#294452','#83d6de']],['terminal','Terminal',['#09110b','#29482e','#8fe88b']]];
+  $('main').innerHTML=heading('MAKE YOURSELF AT HOME','Your own kind of progress.','Small wins add up. Keep a little record of yours.')+`<section class="panel profile-hero"><div class="avatar">Y</div><div><div class="eyebrow">LOCAL TYPIST</div><h2>${levelName(db.xp)}</h2><p>Level ${level} · ${db.xp.toLocaleString()} total XP · ${streak(db.runs)} day streak</p></div><div class="level-progress"><p><span>Next level</span><span>${db.xp%250} / 250 XP</span></p><div class="level-track"><i style="width:${db.xp%250/250*100}%"></i></div></div></section><div class="section-heading"><h2>A few milestones along the way</h2><span>${achievements.filter(a=>a[3]).length} / ${achievements.length} earned</span></div><div class="achievement-grid">${achievements.map(([i,t,d,earned])=>`<div class="achievement${earned?' earned':''}"><div class="achievement-icon" aria-hidden="true">${i}</div><h3>${t}</h3><p>${d}</p><small>${earned?'EARNED':'AHEAD OF YOU'}</small></div>`).join('')}</div><section class="panel"><div class="section-heading"><h2>Set the mood</h2><span>All themes available</span></div><p style="font-size:12px">A quieter screen. A different shade. Make this space yours.</p><div class="theme-grid">${themes.map(([key,name,colors])=>`<button class="theme-card" data-theme-choice="${key}" aria-pressed="${db.settings.theme===key}"><span class="theme-swatches">${colors.map(c=>`<i style="background:${c}"></i>`).join('')}</span>${name}</button>`).join('')}</div><div class="data-tools"><h3>Your progress belongs to you.</h3><p>Stored in this browser, with no account needed. Export a backup to move devices. Import replaces the current profile. Backups from earlier versions are supported.</p><div class="button-row"><button class="button secondary" id="exportBtn">Export progress ↓</button><button class="button secondary" id="importBtn">Import backup ↑</button><input id="importFile" class="file-input" type="file" accept="application/json,.json" aria-label="Import progress backup"><button class="text-link" id="resetBtn" style="color:var(--error)">Reset progress</button></div><p id="importStatus" role="status"></p></div></section>`;
+  document.querySelectorAll('[data-theme-choice]').forEach(b=>b.addEventListener('click',()=>{db.settings.theme=b.dataset.themeChoice;store.save();applyTheme(db.settings.theme);renderProfile();}));
+  $('exportBtn').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(store.data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`typepoise-progress-${localDay()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Progress backup exported.');});
+  $('importBtn').addEventListener('click',()=>$('importFile').click());
+  $('importFile').addEventListener('change',async e=>{const file=e.target.files?.[0];if(!file)return;try{if(file.size>5*1024*1024)throw new Error('Choose a progress file smaller than 5 MB.');const data=JSON.parse(await file.text());store.replace(data);applyTheme(store.data.settings.theme);renderProfile();updateChrome();$('importStatus').textContent='Progress imported successfully.';}catch(error){$('importStatus').textContent=error instanceof SyntaxError?'That file is not valid JSON. Your progress was not changed.':error.message+' Your progress was not changed.';}e.target.value='';});
+  $('resetBtn').addEventListener('click',()=>$('resetDialog').showModal());
+}
+function renderRoute(){
+  if(session&&session.started!==null&&!session.done)notify('Your typing progress has been saved.');
+  stopRun();setFocus(false);
+  const [path,query='']=(location.hash.slice(1)||'home').split('?');route=Object.hasOwn(titles,path)?path:'home';params=new URLSearchParams(query);updateChrome();
+  if(route==='home')renderHome();
+  if(route==='practice'||route==='test'){const track=params.get('track');if(Object.hasOwn(trackNames,track))options.track=track;options.targetKey=params.get('key')?.slice(0,1)||'';renderPractice(route);}
+  if(route==='games'){if(params.get('play')==='ghost')renderPractice('ghost');else if(params.get('play')==='invaders')renderInvaders();else renderGames();}
+  if(route==='stats')renderStats();if(route==='profile')renderProfile();
+  if(store.warning){const note=document.createElement('p');note.className='notice';note.textContent=store.warning;$('main').prepend(note);}
+  window.scrollTo(0,0);
+}
+$('themeToggle').addEventListener('click',()=>{store.data.settings.theme=store.data.settings.theme==='paper'?'void':'paper';store.save();applyTheme(store.data.settings.theme);if(route==='profile')renderProfile();});
+$('cancelReset').addEventListener('click',()=>$('resetDialog').close());
+$('confirmReset').addEventListener('click',()=>{store.reset();$('resetDialog').close();renderRoute();notify('Progress cleared.');});
+window.addEventListener('hashchange',renderRoute);
+document.querySelector('.skip-link').addEventListener('click',e=>{e.preventDefault();$('main').focus();});
+window.addEventListener('pagehide',checkpoint);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)checkpoint();});
+document.addEventListener('keydown',e=>{
+  if(e.defaultPrevented||e.isComposing||e.ctrlKey||e.metaKey||e.altKey||!session||session.done)return;
+  if(e.target.closest?.('input,textarea,select,button,a,[contenteditable]'))return;
+  if(invaders&&e.key.length===1){e.preventDefault();$('invaderInput').focus();typeInvaderText(e.key);}
+  else if(!invaders&&(e.key.length===1||e.key==='Enter')){e.preventDefault();$('typingInput').focus();if(e.key!=='Enter')consume(e.key);}
 });
-$('optKeyboard').addEventListener('change', (e) => {
-  opts.keyboard = e.target.checked;
-  $('keyboard').hidden = !opts.keyboard;
-  paintKeyboardHint();
-});
-$('customInput').addEventListener('change', () => sel.track === 'custom' && restart());
-$('restartBtn').addEventListener('click', () => {
-  newRun(run.text, run.meta);
-  codeEl.focus();
-});
-$('nextBtn').addEventListener('click', () => {
-  restart();
-  codeEl.focus();
-});
-$('rRepeat').addEventListener('click', () => {
-  newRun(run.text, run.meta);
-  codeEl.focus();
-});
-$('rNext').addEventListener('click', () => {
-  restart();
-  codeEl.focus();
-});
-$('statsToggle').addEventListener('click', (e) => {
-  const p = $('statsPanel');
-  p.hidden = !p.hidden;
-  e.currentTarget.setAttribute('aria-expanded', String(!p.hidden));
-  if (!p.hidden) {
-    renderStats();
-    p.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }
-});
-$('resetBtn').addEventListener('click', () => {
-  store.reset();
-  renderStats();
-});
-$('exportBtn').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(store.load())], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `keyforge-progress-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
-$('importFile').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  try {
-    const data = JSON.parse(await file.text());
-    if (!Array.isArray(data.runs) || typeof data.keys !== 'object') throw new Error('shape');
-    store.replace({ runs: data.runs, keys: data.keys || {}, chars: data.chars || 0 });
-    renderStats();
-  } catch {
-    $('storageNote').textContent = 'That file was not a Keyforge progress export.';
-  }
-  e.target.value = '';
-});
-
-codeEl.addEventListener('keydown', handleKey);
-codeEl.addEventListener('focus', () => wrapEl.classList.remove('blurred'));
-codeEl.addEventListener('blur', () => wrapEl.classList.add('blurred'));
-$('focusVeil').addEventListener('click', () => codeEl.focus());
-document.addEventListener('keydown', (e) => {
-  const tag = document.activeElement?.tagName;
-  if (tag === 'TEXTAREA' || tag === 'INPUT') return;
-  if (document.activeElement !== codeEl && (e.key === 'Enter' || e.key === 'Tab')) {
-    e.preventDefault();
-    codeEl.focus();
-    if (e.key === 'Tab') restart();
-  }
-});
-
-/* --- boot --------------------------------------------------------------- */
-$('storageNote').textContent = store.persistent
-  ? 'Progress is saved in this browser.'
-  : 'This frame blocks browser storage, so progress lasts for the session — export it, or run the trainer from the source files for permanent history.';
-buildKeyboard($('keyboard'), false);
-syncFields();
-restart();
-renderStats();
-wrapEl.classList.add('blurred');
+applyTheme(store.data.settings.theme);renderRoute();
